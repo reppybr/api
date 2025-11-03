@@ -19,7 +19,7 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 # Configuração do Mercado Pago
 MERCADO_PAGO_ACCESS_TOKEN = os.getenv('MERCADO_PAGO_ACCESS_TOKEN', 'TEST-XXXX')
 MERCADO_PAGO_BASE_URL = "https://api.mercadopago.com"
-MERCADO_PAGO_WEBHOOK_SECRET = os.getenv('MERCADO_PAGO_WEBHOOK_SECRET')
+MERCADO_PAGO_WEBHOOK_SECRET = os.getenv('MERCADO_PAGO_WEBHOOK_SECRET', 'NOT_SET_SECRET')
 # ========== DECORATORS E FUNÇÕES AUXILIARES ==========
 
 def token_required(f):
@@ -549,6 +549,13 @@ def mercado_pago_webhook():
 
     # 2. Reconstruir e verificar o HASH
     try:
+        # --- Lógica de Diagnóstico e Fallback ---
+        # Garantir que a chave secreta foi carregada
+        if MERCADO_PAGO_WEBHOOK_SECRET is None or MERCADO_PAGO_WEBHOOK_SECRET == 'NOT_SET_SECRET':
+            print("🔴 ERRO CRÍTICO: MERCADO_PAGO_WEBHOOK_SECRET não foi carregada no ambiente.")
+            # Retorna 403 para bloquear o acesso não verificado
+            return jsonify({"status": "error", "message": "Secret key not configured"}), 403
+        
         # Obter o corpo original da requisição em bytes (para hmac)
         request_data_bytes = request.get_data()
         
@@ -565,7 +572,8 @@ def mercado_pago_webhook():
         
         # Comparação segura contra ataques de temporização
         if not hmac.compare_digest(expected_hash, received_hash):
-            print(f"🔴 ERRO DE SEGURANÇA: Assinatura do Webhook Inválida. Chave Secreta Incorreta.")
+            # Adicionei um log para ajudar a identificar se o problema é a chave em si
+            print(f"🔴 ERRO DE SEGURANÇA: Assinatura do Webhook Inválida. HASH esperado vs. recebido não coincidem.")
             # Retorna 403 para indicar acesso não autorizado/assinatura inválida
             return jsonify({"status": "error", "message": "Invalid signature hash"}), 403
 
@@ -573,6 +581,7 @@ def mercado_pago_webhook():
         
     except Exception as e:
         print(f"🔴 Erro durante o processo de verificação de assinatura: {str(e)}")
+        # Retorna 500 para indicar que houve uma falha interna (diferente de 403 por hash)
         return jsonify({"status": "error", "message": "Internal signature check error"}), 500
 
     # 3. Processamento de Notificação (Se a assinatura for VÁLIDA)
@@ -680,4 +689,5 @@ def health_check():
         "service": "pagamentos",
         "mp_configured": mp_configured,
         "timestamp": datetime.datetime.utcnow().isoformat()
+
     }), 200
