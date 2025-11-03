@@ -521,133 +521,223 @@ def create_checkout():
 @pagamentos_bp.route("/webhook", methods=["POST"])
 def mercado_pago_webhook():
     """
-    Webhook para receber notificações do Mercado Pago e ATIVAR o plano.
-    Inclui verificação de assinatura (Chave Secreta) obrigatória.
+    Webhook para receber notificações do Mercado Pago
+    Versão corrigida para lidar com diferentes tipos de notificação
     """
-    # 1. Obter e verificar a Assinatura Secreta (Header X-Signature)
+    print(f"🟢 WEBHOOK RECEBIDO - Headers: {dict(request.headers)}")
+    print(f"🟢 WEBHOOK RECEBIDO - Params: {dict(request.args)}")
+    print(f"🟢 WEBHOOK RECEBIDO - Body: {request.get_data(as_text=True)}")
+    
+    # 1. VERIFICAÇÃO DE SEGURANÇA (X-Signature)
     signature = request.headers.get('X-Signature')
-    timestamp = None
-    received_hash = None
     
     if not signature:
-        print("🔴 ERRO de segurança: Header X-Signature ausente.")
-        return jsonify({"status": "error", "message": "Missing signature"}), 400
+        print("🔴 ERRO: Header X-Signature ausente")
+        return jsonify({"error": "Signature missing"}), 400
     
-    # Extrair timestamp e hash do formato 'ts=X,v1=Y'
+    # Extrair timestamp e hash da signature
     try:
         parts = signature.split(',')
-        if len(parts) == 2:
-            timestamp = parts[0].split('=')[1]
-            received_hash = parts[1].split('=')[1]
+        signature_dict = {}
+        for part in parts:
+            if '=' in part:
+                key, value = part.split('=', 1)
+                signature_dict[key] = value
+        
+        timestamp = signature_dict.get('ts')
+        received_hash = signature_dict.get('v1')
         
         if not timestamp or not received_hash:
-             raise ValueError("Signature parts missing.")
-
+            raise ValueError("Signature incompleta")
+            
     except Exception as e:
-        print(f"🔴 ERRO de formato no header X-Signature: {e}")
-        return jsonify({"status": "error", "message": "Invalid signature format"}), 400
-
-    # 2. Reconstruir e verificar o HASH
+        print(f"🔴 ERRO parsing signature: {str(e)}")
+        return jsonify({"error": "Invalid signature format"}), 400
+    
+    # 2. VERIFICAÇÃO DO HASH
     try:
-        # --- Lógica de Diagnóstico e Fallback ---
-        # Garantir que a chave secreta foi carregada (não é None ou o valor de fallback)
-        if MERCADO_PAGO_WEBHOOK_SECRET is None or MERCADO_PAGO_WEBHOOK_SECRET == 'NOT_SET_SECRET':
-            print("🔴 ERRO CRÍTICO: MERCADO_PAGO_WEBHOOK_SECRET não foi carregada no ambiente.")
-            # Retorna 403 para bloquear o acesso não verificado
-            return jsonify({"status": "error", "message": "Secret key not configured"}), 403
-
-        # Obter o corpo original da requisição em bytes (para hmac)
+        # Obter corpo RAW da requisição
         request_data_bytes = request.get_data()
-
-        # Payload para verificação MP: {timestamp}|{body_original_em_string}
+        
+        # String para verificação: timestamp + "|" + body
         verification_string = f"{timestamp}|{request_data_bytes.decode('utf-8')}"
-
-        # Calcular o HASH esperado (usando SHA256)
+        
+        # Calcular hash esperado
         expected_hash = hmac.new(
             MERCADO_PAGO_WEBHOOK_SECRET.encode('utf-8'),
             verification_string.encode('utf-8'),
             hashlib.sha256
         ).hexdigest()
-
-        # Comparação segura contra ataques de temporização
+        
+        # VERIFICAÇÃO CRÍTICA - DEBUG DETALHADO
+        print(f"🔍 DEBUG WEBHOOK:")
+        print(f"   Timestamp: {timestamp}")
+        print(f"   Hash Recebido: {received_hash}")
+        print(f"   Hash Esperado: {expected_hash}")
+        print(f"   Secret (5 chars): {MERCADO_PAGO_WEBHOOK_SECRET[:5]}...")
+        print(f"   Body Length: {len(request_data_bytes)}")
+        
+        # Comparação SEGURA dos hashes
         if not hmac.compare_digest(expected_hash, received_hash):
-            # 🚨 MENSAGEM DE DIAGNÓSTICO CRÍTICO - ISSO PRECISA APARECER NO SEU LOG 🚨
-            print("-" * 50)
-            print(f"🔴 ERRO DE SEGURANÇA: FALHA NA ASSINATURA (403 FORBIDDEN)")
-            print(f"   HASH ESPERADO: {expected_hash}")
-            print(f"   HASH RECEBIDO: {received_hash}")
-            print(f"   CHAVE USADA (5 chars): {MERCADO_PAGO_WEBHOOK_SECRET[:5]}...")
-            print("-" * 50)
-            # Retorna 403 para indicar acesso não autorizado/assinatura inválida
-            return jsonify({"status": "error", "message": "Invalid signature hash"}), 403
-
-        print("✅ Assinatura do Webhook Mercado Pago verificada com sucesso.")
-
+            print("🔴 ERRO: Hash verification failed!")
+            print(f"   Esperado: {expected_hash}")
+            print(f"   Recebido: {received_hash}")
+            return jsonify({"error": "Invalid signature"}), 403
+            
+        print("✅ Assinatura validada com sucesso!")
+        
     except Exception as e:
-        print(f"🔴 ERRO durante o processo de verificação de assinatura: {str(e)}")
-        # Retorna 500 para indicar que houve uma falha interna (diferente de 403 por hash)
-        return jsonify({"status": "error", "message": "Internal signature check error"}), 500
-
-    # 3. Processamento de Notificação (Se a assinatura for VÁLIDA)
+        print(f"🔴 ERRO na verificação: {str(e)}")
+        return jsonify({"error": "Signature verification failed"}), 500
+    
+    # 3. PROCESSAMENTO DAS NOTIFICAÇÕES
     try:
         data = request.get_json()
+        query_params = request.args
         
-        if data.get('type') == 'payment':
-            payment_id = data.get('data', {}).get('id')
-            
-            if not payment_id:
-                print("⚠️ Webhook de Pagamento sem ID.")
-                return jsonify({"status": "received"}), 200
-            
-            # Buscar detalhes do pagamento
-            payment_data = get_mp_payment_details(payment_id)
-            
-            if not payment_data:
-                print(f"🔴 Não foi possível obter detalhes do pagamento {payment_id} após a validação.")
-                return jsonify({"status": "received"}), 200
-            
-            # Verificar status do pagamento
-            payment_status = payment_data.get('status')
-            preference_id = payment_data.get('preference_id') # Usar a preferência ID do objeto Payment
-            
-            print(f"🟡 Status do pagamento {payment_id}: {payment_status}. Preference ID: {preference_id}")
-            
-            # Processar APENAS pagamentos aprovados
-            if payment_status != 'approved':
-                return jsonify({"status": "received"}), 200
-            
-            # Buscar checkout_session pelo mp_preference_id
-            if not preference_id:
-                 print(f"🔴 Pagamento APROVADO {payment_id} sem 'preference_id' no payload do MP.")
-                 return jsonify({"status": "received"}), 200
-                 
-            checkout_response = supabase.table("checkout_sessions")\
-                .select("*")\
-                .eq("mp_preference_id", preference_id)\
-                .eq("status", "pending")\
-                .execute()
-            
-            if not checkout_response.data or len(checkout_response.data) == 0:
-                print(f"🔴 Sessão de checkout 'pending' não encontrada para MP Preference ID: {preference_id}")
-                return jsonify({"status": "received"}), 200
-            
-            checkout_session = checkout_response.data[0]
-            print(f"✅ Sessão de checkout encontrada: {checkout_session['id']}")
-            
-            # Ativar plano e registrar pagamento (Lógica crítica)
-            success = activate_user_plan_and_register_payment(checkout_session, payment_data)
-            
-            if success:
-                print(f"✅ Processamento completo do pagamento {payment_id}")
-            else:
-                print(f"🔴 Falha na ativação do plano para pagamento {payment_id}. Requer intervenção manual.")
+        print(f"📦 Dados recebidos: {data}")
+        print(f"🔗 Query params: {query_params}")
         
-        # 4. Retorno Final
+        # CASO 1: Notificação via query parameters (IPN legacy)
+        if query_params:
+            print("🟡 Processando webhook via query params")
+            return process_webhook_via_params(query_params)
+        
+        # CASO 2: Notificação via JSON body (Webhooks v2)
+        elif data:
+            print("🟡 Processando webhook via JSON body")
+            return process_webhook_via_json(data)
+        
+        # CASO 3: Form data (alternativo)
+        elif request.form:
+            print("🟡 Processando webhook via form data")
+            return process_webhook_via_form(request.form)
+        
+        else:
+            print("🔴 Nenhum dado encontrado no webhook")
+            return jsonify({"status": "received", "message": "No data found"}), 200
+            
+    except Exception as e:
+        print(f"🔴 Erro no processamento do webhook: {str(e)}")
+        return jsonify({"status": "received", "error": str(e)}), 200
+
+def process_webhook_via_params(params):
+    """Processa webhook com parâmetros na URL"""
+    try:
+        payment_id = params.get('data.id') or params.get('id')
+        topic = params.get('topic')
+        notification_type = params.get('type')
+        
+        print(f"🟡 Webhook params - Payment: {payment_id}, Topic: {topic}, Type: {notification_type}")
+        
+        if topic == 'merchant_order':
+            merchant_order_id = params.get('id')
+            print(f"📦 Merchant Order received: {merchant_order_id}")
+            # Buscar detalhes da merchant order
+            return process_merchant_order(merchant_order_id)
+            
+        elif topic == 'payment' or notification_type == 'payment':
+            if payment_id:
+                print(f"💳 Payment notification: {payment_id}")
+                return process_payment_notification(payment_id)
+        
         return jsonify({"status": "received"}), 200
         
     except Exception as e:
-        print(f"🔴 Erro crítico no processamento do webhook: {str(e)}")
-        return jsonify({"status": "received", "internal_error": "check_logs"}), 200
+        print(f"🔴 Erro process_webhook_via_params: {str(e)}")
+        return jsonify({"status": "received"}), 200
+
+def process_webhook_via_json(data):
+    """Processa webhook com dados JSON"""
+    try:
+        notification_type = data.get('type')
+        resource_id = data.get('data', {}).get('id')
+        
+        print(f"🟡 Webhook JSON - Type: {notification_type}, Resource: {resource_id}")
+        
+        if notification_type == 'payment':
+            print(f"💳 Payment webhook: {resource_id}")
+            return process_payment_notification(resource_id)
+            
+        elif notification_type == 'merchant_order':
+            print(f"📦 Merchant order webhook: {resource_id}")
+            return process_merchant_order(resource_id)
+        
+        return jsonify({"status": "received"}), 200
+        
+    except Exception as e:
+        print(f"🔴 Erro process_webhook_via_json: {str(e)}")
+        return jsonify({"status": "received"}), 200
+
+def process_webhook_via_form(form_data):
+    """Processa webhook com form data"""
+    try:
+        # Similar ao via params, mas de form data
+        payment_id = form_data.get('data.id') or form_data.get('id')
+        topic = form_data.get('topic')
+        
+        if topic == 'payment' and payment_id:
+            return process_payment_notification(payment_id)
+            
+        return jsonify({"status": "received"}), 200
+        
+    except Exception as e:
+        print(f"🔴 Erro process_webhook_via_form: {str(e)}")
+        return jsonify({"status": "received"}), 200
+
+def process_payment_notification(payment_id):
+    """Processa notificação de pagamento"""
+    try:
+        print(f"🟡 Processando pagamento: {payment_id}")
+        
+        # Buscar detalhes do pagamento no MP
+        payment_data = get_mp_payment_details(payment_id)
+        
+        if not payment_data:
+            print(f"🔴 Pagamento não encontrado: {payment_id}")
+            return jsonify({"status": "received"}), 200
+        
+        payment_status = payment_data.get('status')
+        preference_id = payment_data.get('preference_id') or payment_data.get('order', {}).get('preference_id')
+        
+        print(f"🟡 Status do pagamento {payment_id}: {payment_status}")
+        
+        # Processar apenas pagamentos aprovados
+        if payment_status == 'approved':
+            print(f"✅ Pagamento aprovado: {payment_id}")
+            
+            # Buscar sessão de checkout
+            if preference_id:
+                checkout_response = supabase.table("checkout_sessions")\
+                    .select("*")\
+                    .eq("mp_preference_id", preference_id)\
+                    .eq("status", "pending")\
+                    .execute()
+                
+                if checkout_response.data:
+                    checkout_session = checkout_response.data[0]
+                    success = activate_user_plan_and_register_payment(checkout_session, payment_data)
+                    
+                    if success:
+                        print(f"✅ Plano ativado para pagamento {payment_id}")
+                    else:
+                        print(f"🔴 Falha ao ativar plano para {payment_id}")
+        
+        return jsonify({"status": "received"}), 200
+        
+    except Exception as e:
+        print(f"🔴 Erro process_payment_notification: {str(e)}")
+        return jsonify({"status": "received"}), 200
+
+def process_merchant_order(merchant_order_id):
+    """Processa merchant order (opcional)"""
+    try:
+        print(f"📦 Merchant Order: {merchant_order_id}")
+        # Você pode implementar lógica adicional para merchant orders aqui
+        return jsonify({"status": "received"}), 200
+    except Exception as e:
+        print(f"🔴 Erro process_merchant_order: {str(e)}")
+        return jsonify({"status": "received"}), 200
 # ========== ROTAS DE REDIRECIONAMENTO ==========
 
 @pagamentos_bp.route("/success", methods=["GET"])
@@ -692,6 +782,7 @@ def health_check():
         "timestamp": datetime.datetime.utcnow().isoformat()
 
     }), 200
+
 
 
 
