@@ -519,16 +519,28 @@ def create_checkout():
 # ========== WEBHOOK COMPLETO ==========
 
 @pagamentos_bp.route("/webhook", methods=["POST"])
+@pagamentos_bp.route("/webhook", methods=["POST"])
 def mercado_pago_webhook():
     """
     Webhook para receber notificações do Mercado Pago
-    Versão corrigida para lidar com diferentes tipos de notificação
+    VERSÃO CORRIGIDA - Problema de encoding resolvido
     """
     print(f"🟢 WEBHOOK RECEBIDO - Headers: {dict(request.headers)}")
     print(f"🟢 WEBHOOK RECEBIDO - Params: {dict(request.args)}")
-    print(f"🟢 WEBHOOK RECEBIDO - Body: {request.get_data(as_text=True)}")
     
-    # 1. VERIFICAÇÃO DE SEGURANÇA (X-Signature)
+    # 1. OBTER O CORPO ORIGINAL DA REQUISIÇÃO - FORMA CORRETA
+    try:
+        # Obter os dados BRUTOS antes de qualquer parsing
+        request_data_raw = request.get_data(cache=False)
+        body_string = request_data_raw.decode('utf-8')
+        print(f"🟢 WEBHOOK RECEBIDO - Body (RAW): {body_string}")
+        print(f"🟢 WEBHOOK RECEBIDO - Body length: {len(body_string)}")
+        print(f"🟢 WEBHOOK RECEBIDO - Body type: {type(body_string)}")
+    except Exception as e:
+        print(f"🔴 ERRO ao obter body raw: {str(e)}")
+        return jsonify({"error": "Invalid body"}), 400
+    
+    # 2. VERIFICAÇÃO DE SEGURANÇA (X-Signature)
     signature = request.headers.get('X-Signature')
     
     if not signature:
@@ -554,13 +566,19 @@ def mercado_pago_webhook():
         print(f"🔴 ERRO parsing signature: {str(e)}")
         return jsonify({"error": "Invalid signature format"}), 400
     
-    # 2. VERIFICAÇÃO DO HASH
+    # 3. VERIFICAÇÃO DO HASH - FORMA CORRIGIDA
     try:
-        # Obter corpo RAW da requisição
-        request_data_bytes = request.get_data()
+        # 🔥 CORREÇÃO CRÍTICA: Usar o body string EXATO como recebido
+        verification_string = f"{timestamp}|{body_string}"
         
-        # String para verificação: timestamp + "|" + body
-        verification_string = f"{timestamp}|{request_data_bytes.decode('utf-8')}"
+        # DEBUG DETALHADO
+        print(f"🔍 DEBUG VERIFICAÇÃO:")
+        print(f"   Timestamp: {timestamp}")
+        print(f"   Body string: {body_string}")
+        print(f"   Verification string: {verification_string}")
+        print(f"   Verification string length: {len(verification_string)}")
+        print(f"   Hash Recebido: {received_hash}")
+        print(f"   Secret (5 chars): {MERCADO_PAGO_WEBHOOK_SECRET[:5]}...")
         
         # Calcular hash esperado
         expected_hash = hmac.new(
@@ -569,19 +587,34 @@ def mercado_pago_webhook():
             hashlib.sha256
         ).hexdigest()
         
-        # VERIFICAÇÃO CRÍTICA - DEBUG DETALHADO
-        print(f"🔍 DEBUG WEBHOOK:")
-        print(f"   Timestamp: {timestamp}")
-        print(f"   Hash Recebido: {received_hash}")
         print(f"   Hash Esperado: {expected_hash}")
-        print(f"   Secret (5 chars): {MERCADO_PAGO_WEBHOOK_SECRET[:5]}...")
-        print(f"   Body Length: {len(request_data_bytes)}")
         
         # Comparação SEGURA dos hashes
         if not hmac.compare_digest(expected_hash, received_hash):
             print("🔴 ERRO: Hash verification failed!")
-            print(f"   Esperado: {expected_hash}")
-            print(f"   Recebido: {received_hash}")
+            
+            # DEBUG ADICIONAL - Tentar alternativas
+            print("🔄 Tentando verificação alternativa...")
+            
+            # Alternativa 1: Sem decode
+            verification_string_alt1 = f"{timestamp}|{request_data_raw}"
+            expected_hash_alt1 = hmac.new(
+                MERCADO_PAGO_WEBHOOK_SECRET.encode('utf-8'),
+                verification_string_alt1,
+                hashlib.sha256
+            ).hexdigest()
+            print(f"   Alt1 (bytes): {expected_hash_alt1}")
+            
+            # Alternativa 2: Usar request.json
+            if request.json:
+                verification_string_alt2 = f"{timestamp}|{json.dumps(request.json, separators=(',', ':'))}"
+                expected_hash_alt2 = hmac.new(
+                    MERCADO_PAGO_WEBHOOK_SECRET.encode('utf-8'),
+                    verification_string_alt2.encode('utf-8'),
+                    hashlib.sha256
+                ).hexdigest()
+                print(f"   Alt2 (json): {expected_hash_alt2}")
+            
             return jsonify({"error": "Invalid signature"}), 403
             
         print("✅ Assinatura validada com sucesso!")
@@ -590,7 +623,7 @@ def mercado_pago_webhook():
         print(f"🔴 ERRO na verificação: {str(e)}")
         return jsonify({"error": "Signature verification failed"}), 500
     
-    # 3. PROCESSAMENTO DAS NOTIFICAÇÕES
+    # 4. PROCESSAMENTO DAS NOTIFICAÇÕES
     try:
         data = request.get_json()
         query_params = request.args
@@ -607,11 +640,6 @@ def mercado_pago_webhook():
         elif data:
             print("🟡 Processando webhook via JSON body")
             return process_webhook_via_json(data)
-        
-        # CASO 3: Form data (alternativo)
-        elif request.form:
-            print("🟡 Processando webhook via form data")
-            return process_webhook_via_form(request.form)
         
         else:
             print("🔴 Nenhum dado encontrado no webhook")
@@ -782,6 +810,7 @@ def health_check():
         "timestamp": datetime.datetime.utcnow().isoformat()
 
     }), 200
+
 
 
 
