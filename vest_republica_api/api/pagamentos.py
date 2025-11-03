@@ -548,41 +548,43 @@ def mercado_pago_webhook():
         return jsonify({"status": "error", "message": "Invalid signature format"}), 400
 
     # 2. Reconstruir e verificar o HASH
-    try:
-        # --- Lógica de Diagnóstico e Fallback ---
-        # Garantir que a chave secreta foi carregada
-        if MERCADO_PAGO_WEBHOOK_SECRET is None or MERCADO_PAGO_WEBHOOK_SECRET == 'NOT_SET_SECRET':
-            print("🔴 ERRO CRÍTICO: MERCADO_PAGO_WEBHOOK_SECRET não foi carregada no ambiente.")
-            # Retorna 403 para bloquear o acesso não verificado
-            return jsonify({"status": "error", "message": "Secret key not configured"}), 403
-        
-        # Obter o corpo original da requisição em bytes (para hmac)
-        request_data_bytes = request.get_data()
-        
-        # Payload para verificação MP: {timestamp}|{body_original_em_string}
-        # O corpo deve ser passado como string para a função
-        verification_string = f"{timestamp}|{request_data_bytes.decode('utf-8')}"
-        
-        # Calcular o HASH esperado (usando SHA256)
-        expected_hash = hmac.new(
-            MERCADO_PAGO_WEBHOOK_SECRET.encode('utf-8'),
-            verification_string.encode('utf-8'),
-            hashlib.sha256
-        ).hexdigest()
-        
-        # Comparação segura contra ataques de temporização
-        if not hmac.compare_digest(expected_hash, received_hash):
-            # Adicionei um log para ajudar a identificar se o problema é a chave em si
-            print(f"🔴 ERRO DE SEGURANÇA: Assinatura do Webhook Inválida. HASH esperado vs. recebido não coincidem.")
-            # Retorna 403 para indicar acesso não autorizado/assinatura inválida
-            return jsonify({"status": "error", "message": "Invalid signature hash"}), 403
+   try:
+    # --- Lógica de Diagnóstico e Fallback ---
+    # Garante que a chave secreta foi carregada (não é None ou o valor de fallback)
+    if MERCADO_PAGO_WEBHOOK_SECRET is None or MERCADO_PAGO_WEBHOOK_SECRET == 'NOT_SET_SECRET':
+        print("🔴 ERRO CRÍTICO: MERCADO_PAGO_WEBHOOK_SECRET não foi carregada no ambiente.")
+        # Retorna 403 para bloquear o acesso não verificado
+        return jsonify({"status": "error", "message": "Secret key not configured"}), 403
+    
+    # Obter o corpo original da requisição em bytes (para hmac)
+    request_data_bytes = request.get_data()
+    
+    # Payload para verificação MP: {timestamp}|{body_original_em_string}
+    # O corpo deve ser passado como string para a função
+    verification_string = f"{timestamp}|{request_data_bytes.decode('utf-8')}"
+    
+    # Calcular o HASH esperado (usando SHA256)
+    expected_hash = hmac.new(
+        MERCADO_PAGO_WEBHOOK_SECRET.encode('utf-8'),
+        verification_string.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
+    
+    # Comparação segura contra ataques de temporização
+    if not hmac.compare_digest(expected_hash, received_hash):
+        # 🚨 Este log é CRUCIAL para você entender o que está acontecendo!
+        print(f"🔴 ERRO DE SEGURANÇA: Assinatura do Webhook Inválida.")
+        print(f"DEBUG - Hash Esperado: {expected_hash}")
+        print(f"DEBUG - Hash Recebido: {received_hash}")
+        # Retorna 403 para indicar acesso não autorizado/assinatura inválida
+        return jsonify({"status": "error", "message": "Invalid signature hash"}), 403
 
-        print("✅ Assinatura do Webhook Mercado Pago verificada com sucesso.")
-        
-    except Exception as e:
-        print(f"🔴 Erro durante o processo de verificação de assinatura: {str(e)}")
-        # Retorna 500 para indicar que houve uma falha interna (diferente de 403 por hash)
-        return jsonify({"status": "error", "message": "Internal signature check error"}), 500
+    print("✅ Assinatura do Webhook Mercado Pago verificada com sucesso.")
+    
+except Exception as e:
+    print(f"🔴 Erro durante o processo de verificação de assinatura: {str(e)}")
+    # Retorna 500 para indicar que houve uma falha interna (diferente de 403 por hash)
+    return jsonify({"status": "error", "message": "Internal signature check error"}), 500
 
     # 3. Processamento de Notificação (Se a assinatura for VÁLIDA)
     try:
@@ -691,3 +693,4 @@ def health_check():
         "timestamp": datetime.datetime.utcnow().isoformat()
 
     }), 200
+
