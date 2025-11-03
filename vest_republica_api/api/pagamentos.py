@@ -530,7 +530,7 @@ def mercado_pago_webhook():
     received_hash = None
     
     if not signature:
-        print("🔴 Erro de segurança: Header X-Signature ausente.")
+        print("🔴 ERRO de segurança: Header X-Signature ausente.")
         return jsonify({"status": "error", "message": "Missing signature"}), 400
     
     # Extrair timestamp e hash do formato 'ts=X,v1=Y'
@@ -544,46 +544,47 @@ def mercado_pago_webhook():
              raise ValueError("Signature parts missing.")
 
     except Exception as e:
-        print(f"🔴 Erro de formato no header X-Signature: {e}")
-        # Retorna 400 para indicar problema no formato da requisição
+        print(f"🔴 ERRO de formato no header X-Signature: {e}")
         return jsonify({"status": "error", "message": "Invalid signature format"}), 400
 
     # 2. Reconstruir e verificar o HASH
     try:
-     # --- Lógica de Diagnóstico e Fallback ---
-     # Garante que a chave secreta foi carregada (não é None ou o valor de fallback)
-     if MERCADO_PAGO_WEBHOOK_SECRET is None or MERCADO_PAGO_WEBHOOK_SECRET == 'NOT_SET_SECRET':
-         print("🔴 ERRO CRÍTICO: MERCADO_PAGO_WEBHOOK_SECRET não foi carregada no ambiente.")
-         # Retorna 403 para bloquear o acesso não verificado
-         return jsonify({"status": "error", "message": "Secret key not configured"}), 403
+        # --- Lógica de Diagnóstico e Fallback ---
+        # Garantir que a chave secreta foi carregada (não é None ou o valor de fallback)
+        if MERCADO_PAGO_WEBHOOK_SECRET is None or MERCADO_PAGO_WEBHOOK_SECRET == 'NOT_SET_SECRET':
+            print("🔴 ERRO CRÍTICO: MERCADO_PAGO_WEBHOOK_SECRET não foi carregada no ambiente.")
+            # Retorna 403 para bloquear o acesso não verificado
+            return jsonify({"status": "error", "message": "Secret key not configured"}), 403
 
-     # Obter o corpo original da requisição em bytes (para hmac)
-     request_data_bytes = request.get_data()
+        # Obter o corpo original da requisição em bytes (para hmac)
+        request_data_bytes = request.get_data()
 
-     # Payload para verificação MP: {timestamp}|{body_original_em_string}
-     # O corpo deve ser passado como string para a função
-     verification_string = f"{timestamp}|{request_data_bytes.decode('utf-8')}"
+        # Payload para verificação MP: {timestamp}|{body_original_em_string}
+        verification_string = f"{timestamp}|{request_data_bytes.decode('utf-8')}"
 
-     # Calcular o HASH esperado (usando SHA256)
-     expected_hash = hmac.new(
-         MERCADO_PAGO_WEBHOOK_SECRET.encode('utf-8'),
-         verification_string.encode('utf-8'),
-         hashlib.sha256
-     ).hexdigest()
+        # Calcular o HASH esperado (usando SHA256)
+        expected_hash = hmac.new(
+            MERCADO_PAGO_WEBHOOK_SECRET.encode('utf-8'),
+            verification_string.encode('utf-8'),
+            hashlib.sha256
+        ).hexdigest()
 
-     # Comparação segura contra ataques de temporização
-     if not hmac.compare_digest(expected_hash, received_hash):
-         # 🚨 Este log é CRUCIAL para você entender o que está acontecendo!
-         print(f"🔴 ERRO DE SEGURANÇA: Assinatura do Webhook Inválida.")
-         print(f"DEBUG - Hash Esperado: {expected_hash}")
-         print(f"DEBUG - Hash Recebido: {received_hash}")
-         # Retorna 403 para indicar acesso não autorizado/assinatura inválida
-         return jsonify({"status": "error", "message": "Invalid signature hash"}), 403
+        # Comparação segura contra ataques de temporização
+        if not hmac.compare_digest(expected_hash, received_hash):
+            # 🚨 MENSAGEM DE DIAGNÓSTICO CRÍTICO - ISSO PRECISA APARECER NO SEU LOG 🚨
+            print("-" * 50)
+            print(f"🔴 ERRO DE SEGURANÇA: FALHA NA ASSINATURA (403 FORBIDDEN)")
+            print(f"   HASH ESPERADO: {expected_hash}")
+            print(f"   HASH RECEBIDO: {received_hash}")
+            print(f"   CHAVE USADA (5 chars): {MERCADO_PAGO_WEBHOOK_SECRET[:5]}...")
+            print("-" * 50)
+            # Retorna 403 para indicar acesso não autorizado/assinatura inválida
+            return jsonify({"status": "error", "message": "Invalid signature hash"}), 403
 
-     print("✅ Assinatura do Webhook Mercado Pago verificada com sucesso.")
+        print("✅ Assinatura do Webhook Mercado Pago verificada com sucesso.")
 
     except Exception as e:
-        print(f"🔴 Erro durante o processo de verificação de assinatura: {str(e)}")
+        print(f"🔴 ERRO durante o processo de verificação de assinatura: {str(e)}")
         # Retorna 500 para indicar que houve uma falha interna (diferente de 403 por hash)
         return jsonify({"status": "error", "message": "Internal signature check error"}), 500
 
@@ -642,14 +643,11 @@ def mercado_pago_webhook():
                 print(f"🔴 Falha na ativação do plano para pagamento {payment_id}. Requer intervenção manual.")
         
         # 4. Retorno Final
-        # Sempre retornar 200 OK para o Mercado Pago, para indicar que a notificação foi recebida com sucesso
         return jsonify({"status": "received"}), 200
         
     except Exception as e:
         print(f"🔴 Erro crítico no processamento do webhook: {str(e)}")
-        # Em caso de erro interno, ainda retornamos 200 para o MP para evitar reenvios.
         return jsonify({"status": "received", "internal_error": "check_logs"}), 200
-
 # ========== ROTAS DE REDIRECIONAMENTO ==========
 
 @pagamentos_bp.route("/success", methods=["GET"])
@@ -694,5 +692,6 @@ def health_check():
         "timestamp": datetime.datetime.utcnow().isoformat()
 
     }), 200
+
 
 
