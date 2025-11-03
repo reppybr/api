@@ -217,14 +217,16 @@ def complete_registration():
         republic_type = 'mista'
 
     try:
-        print(f"🟡 [AUTH] Criando república '{republic_name}' em {city}/{state} (tipo: {republic_type}) para usuário {current_user['id']}")
+        # 🔥 CORREÇÃO: Apenas converter cidade para minúsculas, estado mantém como estava
+        city_normalized = city.lower().strip()
+        print(f"🟡 [AUTH] Criando república '{republic_name}' em {city_normalized}/{state} (tipo: {republic_type}) para usuário {current_user['id']}")
         
         # 1. Criar a república na tabela republicas
         republic_data = {
             "name": republic_name,
             "tipo": republic_type,  
-            "city": city,           # USA A CIDADE DO FRONTEND
-            "state": state,         # USA O ESTADO DO FRONTEND
+            "city": city_normalized,           # 🔥 CIDADE EM MINÚSCULAS
+            "state": state,                    # 🔥 ESTADO MANTÉM COMO ESTAVA
             "admin_user_id": current_user['id'],
             "is_active": True,
             "created_at": datetime.datetime.utcnow().isoformat(),

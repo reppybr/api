@@ -127,7 +127,11 @@ def update_republic_config():
         
         for field in allowed_fields:
             if field in data and data[field] is not None:
-                update_data[field] = data[field]
+                # Converter campo 'city' para minúsculas
+                if field == 'city':
+                    update_data[field] = data[field].lower()
+                else:
+                    update_data[field] = data[field]
         
         # Adicionar timestamp de atualização
         update_data['updated_at'] = datetime.datetime.utcnow().isoformat()
@@ -156,7 +160,6 @@ def update_republic_config():
     except Exception as e:
         print(f"🔴 [CONFIG] Erro ao atualizar configurações da república: {str(e)}")
         return jsonify({'error': f'Erro ao atualizar configurações: {str(e)}'}), 500
-
 # =============================================
 # ROTAS DE CONFIGURAÇÕES DO USUÁRIO
 # =============================================

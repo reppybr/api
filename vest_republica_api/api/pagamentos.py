@@ -19,6 +19,8 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 MERCADO_PAGO_ACCESS_TOKEN = os.getenv('MERCADO_PAGO_ACCESS_TOKEN', 'TEST-XXXX')
 MERCADO_PAGO_BASE_URL = "https://api.mercadopago.com"
 
+# ========== DECORATORS E FUNÇÕES AUXILIARES ==========
+
 def token_required(f):
     """Decorator que verifica o token do Supabase"""
     @wraps(f)
@@ -48,6 +50,7 @@ def token_required(f):
             g.user = profile_response.data[0]
 
         except Exception as e:
+            print(f"🔴 Erro ao verificar token: {str(e)}")
             return jsonify({"error": f"Erro ao verificar token: {str(e)}"}), 401
 
         return f(*args, **kwargs)
@@ -104,13 +107,208 @@ def get_plan_from_supabase(plan_type, billing_cycle):
         print(f"🔴 Erro ao buscar plano no Supabase: {str(e)}")
         return None
 
+# ========== FUNÇÕES AUXILIARES REFATORADAS ==========
+
+def get_mp_payment_details(payment_id):
+    """
+    Busca detalhes do pagamento no Mercado Pago
+    """
+    try:
+        if not MERCADO_PAGO_ACCESS_TOKEN or MERCADO_PAGO_ACCESS_TOKEN == 'TEST-XXXX':
+            print("⚠️ Token do Mercado Pago não configurado")
+            return None
+
+        headers = {
+            'Authorization': f'Bearer {MERCADO_PAGO_ACCESS_TOKEN}',
+            'Content-Type': 'application/json'
+        }
+        
+        response = requests.get(
+            f"{MERCADO_PAGO_BASE_URL}/v1/payments/{payment_id}",
+            headers=headers,
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            print(f"✅ Detalhes do pagamento {payment_id} obtidos com sucesso")
+            return response.json()
+        else:
+            print(f"🔴 Erro ao buscar detalhes do pagamento: {response.status_code} - {response.text}")
+            return None
+            
+    except Exception as e:
+        print(f"🔴 Erro na função get_mp_payment_details: {str(e)}")
+        return None
+
+def calculate_plan_duration(billing_cycle):
+    """
+    Calcula a duração do plano com base no ciclo de faturamento
+    """
+    if billing_cycle == 'semester':
+        return 6  # meses
+    elif billing_cycle == 'yearly':
+        return 12  # meses
+    else:
+        print(f"⚠️ Ciclo de faturamento inválido: {billing_cycle}, usando padrão de 6 meses")
+        return 6
+
+def activate_user_plan_and_register_payment(checkout_session, payment_data):
+    """
+    Ativa o plano do usuário e registra o pagamento
+    """
+    try:
+        print(f"🟡 Iniciando ativação do plano para sessão {checkout_session['id']}")
+        
+        # Calcular duração do plano
+        duration_months = calculate_plan_duration(checkout_session['billing_cycle'])
+        
+        # Calcular datas
+        current_time = datetime.datetime.utcnow()
+        current_period_start = current_time
+        current_period_end = current_time + datetime.timedelta(days=duration_months * 30)  # Aproximação de 30 dias por mês
+        
+        # Buscar detalhes do plano para obter features
+        plan_details = get_plan_from_supabase(
+            checkout_session['plan_type'], 
+            checkout_session['billing_cycle']
+        )
+        
+        if not plan_details:
+            raise Exception("Plano não encontrado para ativação")
+        
+        # Preparar features do plano
+        plan_features = {
+            'basic': {
+                'max_members': 20,
+                'max_calouros': 50,
+                'max_filters': 10,
+                'advanced_analytics': True,
+                'custom_domain': False,
+                'priority_support': True,
+                'export_data': True,
+                'multiple_users': True
+            },
+            'premium': {
+                'max_members': 100,
+                'max_calouros': 500,
+                'max_filters': 50,
+                'advanced_analytics': True,
+                'custom_domain': True,
+                'priority_support': True,
+                'export_data': True,
+                'multiple_users': True
+            }
+        }.get(checkout_session['plan_type'], {})
+        
+        # ========== REGISTRAR PAGAMENTO ==========
+        payment_record = {
+            "user_id": checkout_session['user_id'],
+            "plan_id": checkout_session['plan_id'],
+            "amount": float(checkout_session['price_amount']),
+            "currency": "BRL",
+            "status": "paid",
+            "payment_method": "mercado_pago",
+            "mp_payment_id": payment_data.get('id'),
+            "description": f"Pagamento plano {checkout_session['plan_type']} - {checkout_session['billing_cycle']}",
+            "paid_at": current_time.isoformat(),
+            "created_at": current_time.isoformat()
+        }
+        
+        payment_insert = supabase.table("payments").insert(payment_record).execute()
+        
+        if not payment_insert.data:
+            raise Exception("Erro ao registrar pagamento")
+        
+        print(f"✅ Pagamento registrado com ID: {payment_insert.data[0]['id']}")
+        
+        # ========== ATIVAR/ATUALIZAR PLANO DO USUÁRIO ==========
+        user_plan_data = {
+            "user_id": checkout_session['user_id'],
+            "republica_id": checkout_session['republica_id'],
+            "plan_type": checkout_session['plan_type'],
+            "status": "active",
+            "current_period_start": current_period_start.isoformat(),
+            "current_period_end": current_period_end.isoformat(),
+            "price_amount": float(checkout_session['price_amount']),
+            "price_currency": "BRL",
+            "features": plan_features,
+            "updated_at": current_time.isoformat()
+        }
+        
+        # Verificar se já existe um plano para atualizar ou criar novo
+        existing_plan = supabase.table("user_plans")\
+            .select("*")\
+            .eq("user_id", checkout_session['user_id'])\
+            .eq("republica_id", checkout_session['republica_id'])\
+            .execute()
+        
+        if existing_plan.data and len(existing_plan.data) > 0:
+            # Atualizar plano existente
+            plan_update = supabase.table("user_plans")\
+                .update(user_plan_data)\
+                .eq("id", existing_plan.data[0]['id'])\
+                .execute()
+            
+            if not plan_update.data:
+                raise Exception("Erro ao atualizar plano do usuário")
+            
+            print(f"✅ Plano do usuário atualizado: {existing_plan.data[0]['id']}")
+        else:
+            # Criar novo plano
+            user_plan_data["created_at"] = current_time.isoformat()
+            plan_insert = supabase.table("user_plans").insert(user_plan_data).execute()
+            
+            if not plan_insert.data:
+                raise Exception("Erro ao criar plano do usuário")
+            
+            print(f"✅ Novo plano do usuário criado: {plan_insert.data[0]['id']}")
+        
+        # ========== ATUALIZAR STATUS DA SESSÃO DE CHECKOUT ==========
+        session_update = supabase.table("checkout_sessions")\
+            .update({
+                "status": "paid",
+                "updated_at": current_time.isoformat()
+            })\
+            .eq("id", checkout_session['id'])\
+            .execute()
+        
+        if not session_update.data:
+            print("⚠️ Aviso: Sessão de checkout não foi atualizada, mas plano foi ativado")
+        else:
+            print(f"✅ Sessão de checkout atualizada para 'paid': {checkout_session['id']}")
+        
+        # Registrar atividade
+        activity_data = {
+            "user_id": checkout_session['user_id'],
+            "republica_id": checkout_session['republica_id'],
+            "activity_type": "plan_activated",
+            "description": f"Plano {checkout_session['plan_type']} ativado via Mercado Pago",
+            "metadata": {
+                "plan_type": checkout_session['plan_type'],
+                "billing_cycle": checkout_session['billing_cycle'],
+                "price": checkout_session['price_amount'],
+                "payment_id": payment_data.get('id')
+            },
+            "created_at": current_time.isoformat()
+        }
+        
+        supabase.table("user_activities").insert(activity_data).execute()
+        
+        print(f"✅ Plano ativado com sucesso para o usuário {checkout_session['user_id']}")
+        return True
+        
+    except Exception as e:
+        print(f"🔴 Erro na função activate_user_plan_and_register_payment: {str(e)}")
+        return False
+
+# ========== CRIAÇÃO DE PREFERÊNCIA DE PAGAMENTO ==========
+
 def create_mercado_pago_preference(user_data, plan_data, republica_id):
     """
     Cria uma preferência de pagamento no Mercado Pago
     """
     try:
         print(f"🟡 Criando preferência MP para {user_data['email']}")
-        print(f"🟡 Plano: {plan_data['title']} - R$ {plan_data['unit_price']}")
         
         # 🔥 VERIFICAÇÃO CRÍTICA DO TOKEN
         if MERCADO_PAGO_ACCESS_TOKEN == 'TEST-XXXX' or not MERCADO_PAGO_ACCESS_TOKEN.startswith('APP_USR-'):
@@ -126,34 +324,46 @@ def create_mercado_pago_preference(user_data, plan_data, republica_id):
         BASE_URL = os.getenv('APP_BASE_URL') 
         
         if not BASE_URL:
-            print("🔴 ALERTA: APP_BASE_URL não está configurada. A API do MP pode falhar.")
-            # Como fallback (não ideal para MP)
+            print("⚠️ ALERTA: APP_BASE_URL não está configurada.")
             BASE_URL = request.host_url.rstrip('/') 
 
-        # Garante que a URL não tem uma barra no final
         base_url = BASE_URL.rstrip('/')
         
-        # URLs agora usarão a URL pública
+        # URLs
         success_url = f"{base_url}/pagamentos/success"
         failure_url = f"{base_url}/pagamentos/failure"
         pending_url = f"{base_url}/pagamentos/pending"
         notification_url = f"{base_url}/pagamentos/webhook"
         
-        # 🔥 CORREÇÃO: O preço deve ser um número (float) - JÁ CORRETO DO BANCO
+        # Garantir que temos uma imagem válida
+        picture_url = plan_data.get('picture_url')
+        if not picture_url:
+            picture_url = f"{base_url}/static/images/plans/{plan_data['plan_type']}.jpg"
+            print(f"🟡 Usando imagem padrão: {picture_url}")
+        
+        # Garantir que o preço seja float
         price_amount = float(plan_data['unit_price'])
         
-        # 🔥 CORREÇÃO: Habilitar PIX explicitamente
+        # Descrição do plano
+        plan_description = plan_data.get('description', '')
+        if not plan_description:
+            if plan_data['plan_type'] == 'basic':
+                plan_description = "Plano Basic - Ideal para repúblicas pequenas"
+            elif plan_data['plan_type'] == 'premium':
+                plan_description = "Plano Premium - Recursos completos para sua república"
+        
+        # Dados da preferência
         preference_data = {
             "items": [
                 {
                     "id": plan_data['id'],
-                    "title": plan_data['title'],
-                    "description": plan_data['description'],
-                    "picture_url": plan_data['picture_url'],
-                    "category_id": plan_data.get('category_id', 'services'),
+                    "title": f"Reppy - {plan_data['title']}",
+                    "description": plan_description,
+                    "picture_url": picture_url,
+                    "category_id": "services",
                     "quantity": 1,
-                    "currency_id": plan_data.get('currency_id', 'BRL'),
-                    "unit_price": price_amount  # Já em reais, não multiplicar!
+                    "currency_id": "BRL",
+                    "unit_price": price_amount
                 }
             ],
             "payer": {
@@ -171,30 +381,26 @@ def create_mercado_pago_preference(user_data, plan_data, republica_id):
             },
             "auto_return": "approved",
             "notification_url": notification_url,
-            "external_reference": f"user_{user_data['id']}_plan_{plan_data['id']}",
+            "external_reference": f"reppy_user_{user_data['id']}_plan_{plan_data['id']}_rep_{republica_id}",
             "metadata": {
                 "user_id": user_data['id'],
+                "user_email": user_data['email'],
                 "plan_type": plan_data['plan_type'],
                 "billing_cycle": plan_data['billing_cycle'],
                 "republica_id": republica_id,
-                "platform": "reppy"
+                "platform": "reppy",
+                "product": "republica_management"
             },
-            "statement_descriptor": "REPPY",
-            "additional_info": plan_data.get('additional_info', 'Assinatura Reppy'),
-            # 🔥 CORREÇÃO: Habilitar PIX explicitamente
-           "payment_methods": {
-    "included_payment_types": [
-        {"id": "pix"},
-        {"id": "credit_card"},
-        {"id": "debit_card"},
-        {"id": "ticket"}  # Boleto
-    ],
-    "installments": 1,
-    "default_installments": 1
-}
+            "statement_descriptor": "REPPY*PLANOS",
+            "additional_info": f"Assinatura Reppy - {plan_data['title']}",
+            "payment_methods": {
+                "excluded_payment_types": [],
+                "excluded_payment_methods": [],
+                "installments": 12,
+                "default_installments": 1
+            },
+            "expires": False
         }
-        
-        print(f"🟡 Dados da preferência: {json.dumps(preference_data, indent=2)}")
         
         response = requests.post(
             f"{MERCADO_PAGO_BASE_URL}/checkout/preferences",
@@ -202,8 +408,6 @@ def create_mercado_pago_preference(user_data, plan_data, republica_id):
             json=preference_data,
             timeout=30
         )
-        
-        print(f"🟡 Resposta MP - Status: {response.status_code}")
         
         if response.status_code == 401:
             print("🔴 ERRO 401: Token do Mercado Pago inválido ou expirado")
@@ -221,6 +425,7 @@ def create_mercado_pago_preference(user_data, plan_data, republica_id):
         
         result = response.json()
         print(f"✅ Preferência criada com sucesso: {result.get('id')}")
+        
         return result
         
     except requests.exceptions.RequestException as e:
@@ -229,6 +434,8 @@ def create_mercado_pago_preference(user_data, plan_data, republica_id):
     except Exception as e:
         print(f"🔴 Erro ao criar preferência MP: {str(e)}")
         raise e
+
+# ========== ROTAS PRINCIPAIS ==========
 
 @pagamentos_bp.route("/create-checkout", methods=["POST"])
 @token_required
@@ -244,10 +451,9 @@ def create_checkout():
             return jsonify({"error": "Tipo de plano é obrigatório"}), 400
         
         plan_type = data.get('plan_type')
-        billing_cycle = data.get('billing_cycle', 'semester')  # 🔥 Mudei para 'semester' como padrão
+        billing_cycle = data.get('billing_cycle', 'semester')
         
         print(f"🟡 Iniciando checkout para usuário {current_user['email']}")
-        print(f"🟡 Plano: {plan_type}, Ciclo: {billing_cycle}")
         
         # Validar tipo de plano
         if plan_type not in ['basic', 'premium']:
@@ -269,8 +475,6 @@ def create_checkout():
         if not plan:
             return jsonify({"error": "Plano não encontrado ou indisponível"}), 404
         
-        print(f"🟡 Preço do plano: R$ {plan['unit_price']}")
-        
         # Criar preferência no Mercado Pago
         mp_preference = create_mercado_pago_preference(current_user, plan, republica['id'])
         
@@ -289,9 +493,8 @@ def create_checkout():
         
         # Inserir registro de checkout
         insert_result = supabase.table("checkout_sessions").insert(checkout_data).execute()
-        print(f"🟡 Checkout salvo no banco: {len(insert_result.data)} registros")
+        print(f"✅ Checkout salvo no banco: {len(insert_result.data)} registros")
         
- 
         checkout_url = mp_preference.get('init_point')
 
         if not checkout_url:
@@ -311,32 +514,7 @@ def create_checkout():
         print(f"🔴 Erro ao criar checkout: {str(e)}")
         return jsonify({"error": f"Erro ao criar checkout: {str(e)}"}), 500
 
-@pagamentos_bp.route("/plans", methods=["GET"])
-@token_required
-def get_plans():
-    """Busca todos os planos disponíveis do Supabase"""
-    try:
-        print("🟡 Buscando planos no Supabase...")
-        
-        response = supabase.table("plans")\
-            .select("*")\
-            .eq("active", True)\
-            .execute()
-        
-        if not response.data:
-            return jsonify({"error": "Nenhum plano encontrado"}), 404
-        
-        plans = response.data
-        print(f"✅ {len(plans)} planos encontrados")
-        
-        return jsonify({
-            "plans": plans,
-            "count": len(plans)
-        }), 200
-        
-    except Exception as e:
-        print(f"🔴 Erro ao buscar planos: {str(e)}")
-        return jsonify({"error": f"Erro ao buscar planos: {str(e)}"}), 500
+# ========== WEBHOOK COMPLETO ==========
 
 @pagamentos_bp.route("/webhook", methods=["POST"])
 def mercado_pago_webhook():
@@ -345,37 +523,80 @@ def mercado_pago_webhook():
     """
     try:
         data = request.get_json()
-        print(f"🟡 Webhook MP recebido: {json.dumps(data, indent=2)}")
+        print(f"🟡 Webhook MP recebido: {data.get('type', 'unknown')}")
         
         # Verificar se é uma notificação de pagamento
         if data.get('type') == 'payment':
             payment_id = data.get('data', {}).get('id')
+            
+            if not payment_id:
+                print("⚠️ Webhook recebido sem ID de pagamento")
+                return jsonify({"status": "received"}), 200
+            
             print(f"🟡 Processando pagamento: {payment_id}")
             
             # Buscar detalhes do pagamento
-            headers = {
-                'Authorization': f'Bearer {MERCADO_PAGO_ACCESS_TOKEN}',
-                'Content-Type': 'application/json'
-            }
+            payment_data = get_mp_payment_details(payment_id)
             
-            payment_response = requests.get(
-                f"{MERCADO_PAGO_BASE_URL}/v1/payments/{payment_id}",
-                headers=headers
-            )
+            if not payment_data:
+                print(f"🔴 Não foi possível obter detalhes do pagamento {payment_id}")
+                return jsonify({"status": "received"}), 200
             
-            if payment_response.status_code == 200:
-                payment_data = payment_response.json()
-                print(f"🟡 Dados do pagamento: {json.dumps(payment_data, indent=2)}")
-                
-                # Aqui você processaria o pagamento e ativaria o plano
-                # status = payment_data.get('status')
-                # external_reference = payment_data.get('external_reference')
-                
+            # Verificar status do pagamento
+            payment_status = payment_data.get('status')
+            print(f"🟡 Status do pagamento {payment_id}: {payment_status}")
+            
+            # Processar apenas pagamentos aprovados
+            if payment_status != 'approved':
+                print(f"⚠️ Pagamento {payment_id} não aprovado (status: {payment_status})")
+                return jsonify({"status": "received"}), 200
+            
+            # Buscar external_reference para encontrar a checkout_session
+            external_reference = payment_data.get('external_reference')
+            if not external_reference:
+                print(f"🔴 Pagamento {payment_id} sem external_reference")
+                return jsonify({"status": "received"}), 200
+            
+            print(f"🟡 External reference: {external_reference}")
+            
+            # Buscar checkout_session pelo preference_id (mp_preference_id)
+            # O external_reference contém informações, mas vamos buscar pela preference_id do pagamento
+            preference_id = payment_data.get('point_of_interaction', {}).get('transaction_data', {}).get('preference_id')
+            
+            if not preference_id:
+                print(f"🔴 Não foi possível encontrar preference_id no pagamento {payment_id}")
+                return jsonify({"status": "received"}), 200
+            
+            # Buscar checkout_session pelo mp_preference_id
+            checkout_response = supabase.table("checkout_sessions")\
+                .select("*")\
+                .eq("mp_preference_id", preference_id)\
+                .eq("status", "pending")\
+                .execute()
+            
+            if not checkout_response.data or len(checkout_response.data) == 0:
+                print(f"🔴 Sessão de checkout não encontrada para preference_id: {preference_id}")
+                return jsonify({"status": "received"}), 200
+            
+            checkout_session = checkout_response.data[0]
+            print(f"✅ Sessão de checkout encontrada: {checkout_session['id']}")
+            
+            # Ativar plano e registrar pagamento
+            success = activate_user_plan_and_register_payment(checkout_session, payment_data)
+            
+            if success:
+                print(f"✅ Processamento completo do pagamento {payment_id}")
+            else:
+                print(f"🔴 Falha no processamento do pagamento {payment_id}")
+        
         return jsonify({"status": "received"}), 200
         
     except Exception as e:
         print(f"🔴 Erro no webhook MP: {str(e)}")
-        return jsonify({"error": "Erro no webhook"}), 500
+        # Sempre retornar 200 para evitar reenvios
+        return jsonify({"status": "received"}), 200
+
+# ========== ROTAS DE REDIRECIONAMENTO ==========
 
 @pagamentos_bp.route("/success", methods=["GET"])
 def payment_success():
@@ -405,11 +626,16 @@ def payment_pending():
         "instructions": "Aguarde a confirmação do pagamento. Você receberá um email quando for aprovado."
     }), 200
 
+# ========== HEALTH CHECK ==========
+
 @pagamentos_bp.route("/health", methods=["GET"])
 def health_check():
     """Health check do serviço de pagamentos"""
+    mp_configured = MERCADO_PAGO_ACCESS_TOKEN != 'TEST-XXXX' and MERCADO_PAGO_ACCESS_TOKEN.startswith('APP_USR-')
+    
     return jsonify({
         "status": "healthy",
         "service": "pagamentos",
-        "mp_configured": MERCADO_PAGO_ACCESS_TOKEN != 'TEST-XXXX'
+        "mp_configured": mp_configured,
+        "timestamp": datetime.datetime.utcnow().isoformat()
     }), 200
