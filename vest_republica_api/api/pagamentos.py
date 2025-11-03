@@ -113,20 +113,20 @@ def get_plan_from_supabase(plan_type, billing_cycle):
 
 def get_mp_payment_details(payment_id):
     """
-    Busca detalhes do pagamento no Mercado Pago
+    Busca detalhes do pagamento no  Pago
     """
     try:
-        if not MERCADO_PAGO_ACCESS_TOKEN or MERCADO_PAGO_ACCESS_TOKEN == 'TEST-XXXX':
-            print("⚠️ Token do Mercado Pago não configurado")
+        if not _PAGO_ACCESS_TOKEN or _PAGO_ACCESS_TOKEN == 'TEST-XXXX':
+            print("⚠️ Token do  Pago não configurado")
             return None
 
         headers = {
-            'Authorization': f'Bearer {MERCADO_PAGO_ACCESS_TOKEN}',
+            'Authorization': f'Bearer {_PAGO_ACCESS_TOKEN}',
             'Content-Type': 'application/json'
         }
         
         response = requests.get(
-            f"{MERCADO_PAGO_BASE_URL}/v1/payments/{payment_id}",
+            f"{_PAGO_BASE_URL}/v1/payments/{payment_id}",
             headers=headers,
             timeout=30
         )
@@ -209,7 +209,7 @@ def activate_user_plan_and_register_payment(checkout_session, payment_data):
             "amount": float(checkout_session['price_amount']),
             "currency": "BRL",
             "status": "paid",
-            "payment_method": "mercado_pago",
+            "payment_method": "_pago",
             "mp_payment_id": payment_data.get('id'),
             "description": f"Pagamento plano {checkout_session['plan_type']} - {checkout_session['billing_cycle']}",
             "paid_at": current_time.isoformat(),
@@ -284,7 +284,7 @@ def activate_user_plan_and_register_payment(checkout_session, payment_data):
             "user_id": checkout_session['user_id'],
             "republica_id": checkout_session['republica_id'],
             "activity_type": "plan_activated",
-            "description": f"Plano {checkout_session['plan_type']} ativado via Mercado Pago",
+            "description": f"Plano {checkout_session['plan_type']} ativado via  Pago",
             "metadata": {
                 "plan_type": checkout_session['plan_type'],
                 "billing_cycle": checkout_session['billing_cycle'],
@@ -305,9 +305,9 @@ def activate_user_plan_and_register_payment(checkout_session, payment_data):
 
 # ========== CRIAÇÃO DE PREFERÊNCIA DE PAGAMENTO ==========
 
-def create_mercado_pago_preference(user_data, plan_data, republica_id):
+def create__pago_preference(user_data, plan_data, republica_id):
     """
-    Cria uma preferência de pagamento no Mercado Pago
+    Cria uma preferência de pagamento no  Pago
     """
     try:
         print(f"🟡 Criando preferência MP para {user_data['email']}")
@@ -523,31 +523,25 @@ def create_checkout():
 def mercado_pago_webhook():
     """
     Webhook para receber notificações do Mercado Pago
-    VERSÃO CORRIGIDA - Problema de encoding resolvido
+    VERSÃO COM DEBUG DETALHADO
     """
     print(f"🟢 WEBHOOK RECEBIDO - Headers: {dict(request.headers)}")
-    print(f"🟢 WEBHOOK RECEBIDO - Params: {dict(request.args)}")
     
-    # 1. OBTER O CORPO ORIGINAL DA REQUISIÇÃO - FORMA CORRETA
-    try:
-        # Obter os dados BRUTOS antes de qualquer parsing
-        request_data_raw = request.get_data(cache=False)
-        body_string = request_data_raw.decode('utf-8')
-        print(f"🟢 WEBHOOK RECEBIDO - Body (RAW): {body_string}")
-        print(f"🟢 WEBHOOK RECEBIDO - Body length: {len(body_string)}")
-        print(f"🟢 WEBHOOK RECEBIDO - Body type: {type(body_string)}")
-    except Exception as e:
-        print(f"🔴 ERRO ao obter body raw: {str(e)}")
-        return jsonify({"error": "Invalid body"}), 400
+    # 1. OBTER DADOS BRUTOS
+    request_data_raw = request.get_data(cache=False)
+    body_string = request_data_raw.decode('utf-8')
     
-    # 2. VERIFICAÇÃO DE SEGURANÇA (X-Signature)
+    print(f"🟢 WEBHOOK RECEBIDO - Body (RAW): {repr(body_string)}")  # REPR para ver caracteres especiais
+    print(f"🟢 WEBHOOK RECEBIDO - Body (HEX): {request_data_raw.hex()}")  # Hex para ver bytes exatos
+    
+    # 2. VERIFICAÇÃO DE SEGURANÇA
     signature = request.headers.get('X-Signature')
     
     if not signature:
         print("🔴 ERRO: Header X-Signature ausente")
         return jsonify({"error": "Signature missing"}), 400
     
-    # Extrair timestamp e hash da signature
+    # Extrair timestamp e hash
     try:
         parts = signature.split(',')
         signature_dict = {}
@@ -559,71 +553,94 @@ def mercado_pago_webhook():
         timestamp = signature_dict.get('ts')
         received_hash = signature_dict.get('v1')
         
-        if not timestamp or not received_hash:
-            raise ValueError("Signature incompleta")
-            
+        print(f"🟢 TIMESTAMP: {timestamp}")
+        print(f"🟢 HASH RECEBIDO: {received_hash}")
+        
     except Exception as e:
         print(f"🔴 ERRO parsing signature: {str(e)}")
         return jsonify({"error": "Invalid signature format"}), 400
     
-    # 3. VERIFICAÇÃO DO HASH - FORMA CORRIGIDA
-    try:
-        # 🔥 CORREÇÃO CRÍTICA: Usar o body string EXATO como recebido
-        verification_string = f"{timestamp}|{body_string}"
-        
-        # DEBUG DETALHADO
-        print(f"🔍 DEBUG VERIFICAÇÃO:")
-        print(f"   Timestamp: {timestamp}")
-        print(f"   Body string: {body_string}")
-        print(f"   Verification string: {verification_string}")
-        print(f"   Verification string length: {len(verification_string)}")
-        print(f"   Hash Recebido: {received_hash}")
-        print(f"   Secret (5 chars): {MERCADO_PAGO_WEBHOOK_SECRET[:5]}...")
-        
-        # Calcular hash esperado
-        expected_hash = hmac.new(
-            MERCADO_PAGO_WEBHOOK_SECRET.encode('utf-8'),
-            verification_string.encode('utf-8'),
-            hashlib.sha256
-        ).hexdigest()
-        
-        print(f"   Hash Esperado: {expected_hash}")
-        
-        # Comparação SEGURA dos hashes
-        if not hmac.compare_digest(expected_hash, received_hash):
-            print("🔴 ERRO: Hash verification failed!")
-            
-            # DEBUG ADICIONAL - Tentar alternativas
-            print("🔄 Tentando verificação alternativa...")
-            
-            # Alternativa 1: Sem decode
-            verification_string_alt1 = f"{timestamp}|{request_data_raw}"
-            expected_hash_alt1 = hmac.new(
-                MERCADO_PAGO_WEBHOOK_SECRET.encode('utf-8'),
-                verification_string_alt1,
-                hashlib.sha256
-            ).hexdigest()
-            print(f"   Alt1 (bytes): {expected_hash_alt1}")
-            
-            # Alternativa 2: Usar request.json
-            if request.json:
-                verification_string_alt2 = f"{timestamp}|{json.dumps(request.json, separators=(',', ':'))}"
-                expected_hash_alt2 = hmac.new(
-                    MERCADO_PAGO_WEBHOOK_SECRET.encode('utf-8'),
-                    verification_string_alt2.encode('utf-8'),
-                    hashlib.sha256
-                ).hexdigest()
-                print(f"   Alt2 (json): {expected_hash_alt2}")
-            
-            return jsonify({"error": "Invalid signature"}), 403
-            
-        print("✅ Assinatura validada com sucesso!")
-        
-    except Exception as e:
-        print(f"🔴 ERRO na verificação: {str(e)}")
-        return jsonify({"error": "Signature verification failed"}), 500
+    # 3. VERIFICAÇÃO MANUAL DETALHADA
+    print("\n🔍 VERIFICAÇÃO MANUAL DETALHADA:")
+    print("=" * 60)
     
-    # 4. PROCESSAMENTO DAS NOTIFICAÇÕES
+    # Teste 1: Método atual (string)
+    verification_string_1 = f"{timestamp}|{body_string}"
+    expected_hash_1 = hmac.new(
+        MERCADO_PAGO_WEBHOOK_SECRET.encode('utf-8'),
+        verification_string_1.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
+    
+    print(f"TESTE 1 (String):")
+    print(f"  String: {repr(verification_string_1)}")
+    print(f"  Hash:   {expected_hash_1}")
+    print(f"  Match:  {expected_hash_1 == received_hash}")
+    
+    # Teste 2: Método com bytes raw
+    verification_bytes_2 = timestamp.encode('utf-8') + b'|' + request_data_raw
+    expected_hash_2 = hmac.new(
+        MERCADO_PAGO_WEBHOOK_SECRET.encode('utf-8'),
+        verification_bytes_2,
+        hashlib.sha256
+    ).hexdigest()
+    
+    print(f"\nTESTE 2 (Bytes raw):")
+    print(f"  Bytes:  {verification_bytes_2.hex()}")
+    print(f"  Hash:   {expected_hash_2}")
+    print(f"  Match:  {expected_hash_2 == received_hash}")
+    
+    # Teste 3: Método alternativo (sem decode)
+    verification_string_3 = f"{timestamp}|{request_data_raw.decode('utf-8', errors='ignore')}"
+    expected_hash_3 = hmac.new(
+        MERCADO_PAGO_WEBHOOK_SECRET.encode('utf-8'),
+        verification_string_3.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
+    
+    print(f"\nTESTE 3 (Decode ignore errors):")
+    print(f"  Hash:   {expected_hash_3}")
+    print(f"  Match:  {expected_hash_3 == received_hash}")
+    
+    # Teste 4: Verificar se há diferenças de whitespace
+    body_minified = json.dumps(json.loads(body_string), separators=(',', ':'))
+    verification_string_4 = f"{timestamp}|{body_minified}"
+    expected_hash_4 = hmac.new(
+        MERCADO_PAGO_WEBHOOK_SECRET.encode('utf-8'),
+        verification_string_4.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
+    
+    print(f"\nTESTE 4 (JSON minificado):")
+    print(f"  Body original: {repr(body_string)}")
+    print(f"  Body minified: {repr(body_minified)}")
+    print(f"  São iguais?   {body_string == body_minified}")
+    print(f"  Hash:         {expected_hash_4}")
+    print(f"  Match:        {expected_hash_4 == received_hash}")
+    
+    print("=" * 60)
+    
+    # 4. VERIFICAR QUAL MÉTODO FUNCIONA
+    working_hash = None
+    if expected_hash_1 == received_hash:
+        working_hash = expected_hash_1
+        print("✅ MÉTODO 1 FUNCIONOU! (String normal)")
+    elif expected_hash_2 == received_hash:
+        working_hash = expected_hash_2  
+        print("✅ MÉTODO 2 FUNCIONOU! (Bytes raw)")
+    elif expected_hash_3 == received_hash:
+        working_hash = expected_hash_3
+        print("✅ MÉTODO 3 FUNCIONOU! (Decode ignore errors)")
+    elif expected_hash_4 == received_hash:
+        working_hash = expected_hash_4
+        print("✅ MÉTODO 4 FUNCIONOU! (JSON minificado)")
+    else:
+        print("🔴 NENHUM MÉTODO FUNCIONOU!")
+        return jsonify({"error": "Signature verification failed"}), 403
+    
+    print(f"✅ Assinatura validada com método funcionando!")
+    
+    # 5. CONTINUAR COM PROCESSAMENTO NORMAL
     try:
         data = request.get_json()
         query_params = request.args
@@ -631,140 +648,17 @@ def mercado_pago_webhook():
         print(f"📦 Dados recebidos: {data}")
         print(f"🔗 Query params: {query_params}")
         
-        # CASO 1: Notificação via query parameters (IPN legacy)
         if query_params:
             print("🟡 Processando webhook via query params")
             return process_webhook_via_params(query_params)
-        
-        # CASO 2: Notificação via JSON body (Webhooks v2)
         elif data:
             print("🟡 Processando webhook via JSON body")
             return process_webhook_via_json(data)
-        
         else:
-            print("🔴 Nenhum dado encontrado no webhook")
-            return jsonify({"status": "received", "message": "No data found"}), 200
-            
-    except Exception as e:
-        print(f"🔴 Erro no processamento do webhook: {str(e)}")
-        return jsonify({"status": "received", "error": str(e)}), 200
-
-def process_webhook_via_params(params):
-    """Processa webhook com parâmetros na URL"""
-    try:
-        payment_id = params.get('data.id') or params.get('id')
-        topic = params.get('topic')
-        notification_type = params.get('type')
-        
-        print(f"🟡 Webhook params - Payment: {payment_id}, Topic: {topic}, Type: {notification_type}")
-        
-        if topic == 'merchant_order':
-            merchant_order_id = params.get('id')
-            print(f"📦 Merchant Order received: {merchant_order_id}")
-            # Buscar detalhes da merchant order
-            return process_merchant_order(merchant_order_id)
-            
-        elif topic == 'payment' or notification_type == 'payment':
-            if payment_id:
-                print(f"💳 Payment notification: {payment_id}")
-                return process_payment_notification(payment_id)
-        
-        return jsonify({"status": "received"}), 200
-        
-    except Exception as e:
-        print(f"🔴 Erro process_webhook_via_params: {str(e)}")
-        return jsonify({"status": "received"}), 200
-
-def process_webhook_via_json(data):
-    """Processa webhook com dados JSON"""
-    try:
-        notification_type = data.get('type')
-        resource_id = data.get('data', {}).get('id')
-        
-        print(f"🟡 Webhook JSON - Type: {notification_type}, Resource: {resource_id}")
-        
-        if notification_type == 'payment':
-            print(f"💳 Payment webhook: {resource_id}")
-            return process_payment_notification(resource_id)
-            
-        elif notification_type == 'merchant_order':
-            print(f"📦 Merchant order webhook: {resource_id}")
-            return process_merchant_order(resource_id)
-        
-        return jsonify({"status": "received"}), 200
-        
-    except Exception as e:
-        print(f"🔴 Erro process_webhook_via_json: {str(e)}")
-        return jsonify({"status": "received"}), 200
-
-def process_webhook_via_form(form_data):
-    """Processa webhook com form data"""
-    try:
-        # Similar ao via params, mas de form data
-        payment_id = form_data.get('data.id') or form_data.get('id')
-        topic = form_data.get('topic')
-        
-        if topic == 'payment' and payment_id:
-            return process_payment_notification(payment_id)
-            
-        return jsonify({"status": "received"}), 200
-        
-    except Exception as e:
-        print(f"🔴 Erro process_webhook_via_form: {str(e)}")
-        return jsonify({"status": "received"}), 200
-
-def process_payment_notification(payment_id):
-    """Processa notificação de pagamento"""
-    try:
-        print(f"🟡 Processando pagamento: {payment_id}")
-        
-        # Buscar detalhes do pagamento no MP
-        payment_data = get_mp_payment_details(payment_id)
-        
-        if not payment_data:
-            print(f"🔴 Pagamento não encontrado: {payment_id}")
             return jsonify({"status": "received"}), 200
-        
-        payment_status = payment_data.get('status')
-        preference_id = payment_data.get('preference_id') or payment_data.get('order', {}).get('preference_id')
-        
-        print(f"🟡 Status do pagamento {payment_id}: {payment_status}")
-        
-        # Processar apenas pagamentos aprovados
-        if payment_status == 'approved':
-            print(f"✅ Pagamento aprovado: {payment_id}")
             
-            # Buscar sessão de checkout
-            if preference_id:
-                checkout_response = supabase.table("checkout_sessions")\
-                    .select("*")\
-                    .eq("mp_preference_id", preference_id)\
-                    .eq("status", "pending")\
-                    .execute()
-                
-                if checkout_response.data:
-                    checkout_session = checkout_response.data[0]
-                    success = activate_user_plan_and_register_payment(checkout_session, payment_data)
-                    
-                    if success:
-                        print(f"✅ Plano ativado para pagamento {payment_id}")
-                    else:
-                        print(f"🔴 Falha ao ativar plano para {payment_id}")
-        
-        return jsonify({"status": "received"}), 200
-        
     except Exception as e:
-        print(f"🔴 Erro process_payment_notification: {str(e)}")
-        return jsonify({"status": "received"}), 200
-
-def process_merchant_order(merchant_order_id):
-    """Processa merchant order (opcional)"""
-    try:
-        print(f"📦 Merchant Order: {merchant_order_id}")
-        # Você pode implementar lógica adicional para merchant orders aqui
-        return jsonify({"status": "received"}), 200
-    except Exception as e:
-        print(f"🔴 Erro process_merchant_order: {str(e)}")
+        print(f"🔴 Erro no processamento: {str(e)}")
         return jsonify({"status": "received"}), 200
 # ========== ROTAS DE REDIRECIONAMENTO ==========
 
@@ -810,6 +704,7 @@ def health_check():
         "timestamp": datetime.datetime.utcnow().isoformat()
 
     }), 200
+
 
 
 
