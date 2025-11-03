@@ -20,6 +20,7 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 MERCADO_PAGO_ACCESS_TOKEN = os.getenv('MERCADO_PAGO_ACCESS_TOKEN', 'TEST-XXXX')
 MERCADO_PAGO_BASE_URL = "https://api.mercadopago.com"
 MERCADO_PAGO_WEBHOOK_SECRET = os.getenv('MERCADO_PAGO_WEBHOOK_SECRET', 'NOT_SET_SECRET')
+print(f"🚨 VALOR SECRETO CARREGADO (PRIMEIROS 5 CHARS): {MERCADO_PAGO_WEBHOOK_SECRET[:5]}...")
 # ========== DECORATORS E FUNÇÕES AUXILIARES ==========
 
 def token_required(f):
@@ -693,4 +694,5 @@ def health_check():
         "timestamp": datetime.datetime.utcnow().isoformat()
 
     }), 200
+
 
