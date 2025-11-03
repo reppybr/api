@@ -5,7 +5,8 @@ from supabase import create_client
 from functools import wraps
 import requests
 import json
-
+import hmac
+import hashlib
 # Cria o blueprint
 pagamentos_bp = Blueprint('pagamentos', __name__)
 
@@ -18,7 +19,7 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 # Configuração do Mercado Pago
 MERCADO_PAGO_ACCESS_TOKEN = os.getenv('MERCADO_PAGO_ACCESS_TOKEN', 'TEST-XXXX')
 MERCADO_PAGO_BASE_URL = "https://api.mercadopago.com"
-
+MERCADO_PAGO_WEBHOOK_SECRET = os.getenv('MERCADO_PAGO_WEBHOOK_SECRET')
 # ========== DECORATORS E FUNÇÕES AUXILIARES ==========
 
 def token_required(f):
@@ -519,55 +520,94 @@ def create_checkout():
 @pagamentos_bp.route("/webhook", methods=["POST"])
 def mercado_pago_webhook():
     """
-    Webhook para receber notificações do Mercado Pago
+    Webhook para receber notificações do Mercado Pago e ATIVAR o plano.
+    Inclui verificação de assinatura (Chave Secreta) obrigatória.
     """
+    # 1. Obter e verificar a Assinatura Secreta (Header X-Signature)
+    signature = request.headers.get('X-Signature')
+    timestamp = None
+    received_hash = None
+    
+    if not signature:
+        print("🔴 Erro de segurança: Header X-Signature ausente.")
+        return jsonify({"status": "error", "message": "Missing signature"}), 400
+    
+    # Extrair timestamp e hash do formato 'ts=X,v1=Y'
+    try:
+        parts = signature.split(',')
+        if len(parts) == 2:
+            timestamp = parts[0].split('=')[1]
+            received_hash = parts[1].split('=')[1]
+        
+        if not timestamp or not received_hash:
+             raise ValueError("Signature parts missing.")
+
+    except Exception as e:
+        print(f"🔴 Erro de formato no header X-Signature: {e}")
+        # Retorna 400 para indicar problema no formato da requisição
+        return jsonify({"status": "error", "message": "Invalid signature format"}), 400
+
+    # 2. Reconstruir e verificar o HASH
+    try:
+        # Obter o corpo original da requisição em bytes (para hmac)
+        request_data_bytes = request.get_data()
+        
+        # Payload para verificação MP: {timestamp}|{body_original_em_string}
+        # O corpo deve ser passado como string para a função
+        verification_string = f"{timestamp}|{request_data_bytes.decode('utf-8')}"
+        
+        # Calcular o HASH esperado (usando SHA256)
+        expected_hash = hmac.new(
+            MERCADO_PAGO_WEBHOOK_SECRET.encode('utf-8'),
+            verification_string.encode('utf-8'),
+            hashlib.sha256
+        ).hexdigest()
+        
+        # Comparação segura contra ataques de temporização
+        if not hmac.compare_digest(expected_hash, received_hash):
+            print(f"🔴 ERRO DE SEGURANÇA: Assinatura do Webhook Inválida. Chave Secreta Incorreta.")
+            # Retorna 403 para indicar acesso não autorizado/assinatura inválida
+            return jsonify({"status": "error", "message": "Invalid signature hash"}), 403
+
+        print("✅ Assinatura do Webhook Mercado Pago verificada com sucesso.")
+        
+    except Exception as e:
+        print(f"🔴 Erro durante o processo de verificação de assinatura: {str(e)}")
+        return jsonify({"status": "error", "message": "Internal signature check error"}), 500
+
+    # 3. Processamento de Notificação (Se a assinatura for VÁLIDA)
     try:
         data = request.get_json()
-        print(f"🟡 Webhook MP recebido: {data.get('type', 'unknown')}")
         
-        # Verificar se é uma notificação de pagamento
         if data.get('type') == 'payment':
             payment_id = data.get('data', {}).get('id')
             
             if not payment_id:
-                print("⚠️ Webhook recebido sem ID de pagamento")
+                print("⚠️ Webhook de Pagamento sem ID.")
                 return jsonify({"status": "received"}), 200
-            
-            print(f"🟡 Processando pagamento: {payment_id}")
             
             # Buscar detalhes do pagamento
             payment_data = get_mp_payment_details(payment_id)
             
             if not payment_data:
-                print(f"🔴 Não foi possível obter detalhes do pagamento {payment_id}")
+                print(f"🔴 Não foi possível obter detalhes do pagamento {payment_id} após a validação.")
                 return jsonify({"status": "received"}), 200
             
             # Verificar status do pagamento
             payment_status = payment_data.get('status')
-            print(f"🟡 Status do pagamento {payment_id}: {payment_status}")
+            preference_id = payment_data.get('preference_id') # Usar a preferência ID do objeto Payment
             
-            # Processar apenas pagamentos aprovados
+            print(f"🟡 Status do pagamento {payment_id}: {payment_status}. Preference ID: {preference_id}")
+            
+            # Processar APENAS pagamentos aprovados
             if payment_status != 'approved':
-                print(f"⚠️ Pagamento {payment_id} não aprovado (status: {payment_status})")
-                return jsonify({"status": "received"}), 200
-            
-            # Buscar external_reference para encontrar a checkout_session
-            external_reference = payment_data.get('external_reference')
-            if not external_reference:
-                print(f"🔴 Pagamento {payment_id} sem external_reference")
-                return jsonify({"status": "received"}), 200
-            
-            print(f"🟡 External reference: {external_reference}")
-            
-            # Buscar checkout_session pelo preference_id (mp_preference_id)
-            # O external_reference contém informações, mas vamos buscar pela preference_id do pagamento
-            preference_id = payment_data.get('point_of_interaction', {}).get('transaction_data', {}).get('preference_id')
-            
-            if not preference_id:
-                print(f"🔴 Não foi possível encontrar preference_id no pagamento {payment_id}")
                 return jsonify({"status": "received"}), 200
             
             # Buscar checkout_session pelo mp_preference_id
+            if not preference_id:
+                 print(f"🔴 Pagamento APROVADO {payment_id} sem 'preference_id' no payload do MP.")
+                 return jsonify({"status": "received"}), 200
+                 
             checkout_response = supabase.table("checkout_sessions")\
                 .select("*")\
                 .eq("mp_preference_id", preference_id)\
@@ -575,26 +615,28 @@ def mercado_pago_webhook():
                 .execute()
             
             if not checkout_response.data or len(checkout_response.data) == 0:
-                print(f"🔴 Sessão de checkout não encontrada para preference_id: {preference_id}")
+                print(f"🔴 Sessão de checkout 'pending' não encontrada para MP Preference ID: {preference_id}")
                 return jsonify({"status": "received"}), 200
             
             checkout_session = checkout_response.data[0]
             print(f"✅ Sessão de checkout encontrada: {checkout_session['id']}")
             
-            # Ativar plano e registrar pagamento
+            # Ativar plano e registrar pagamento (Lógica crítica)
             success = activate_user_plan_and_register_payment(checkout_session, payment_data)
             
             if success:
                 print(f"✅ Processamento completo do pagamento {payment_id}")
             else:
-                print(f"🔴 Falha no processamento do pagamento {payment_id}")
+                print(f"🔴 Falha na ativação do plano para pagamento {payment_id}. Requer intervenção manual.")
         
+        # 4. Retorno Final
+        # Sempre retornar 200 OK para o Mercado Pago, para indicar que a notificação foi recebida com sucesso
         return jsonify({"status": "received"}), 200
         
     except Exception as e:
-        print(f"🔴 Erro no webhook MP: {str(e)}")
-        # Sempre retornar 200 para evitar reenvios
-        return jsonify({"status": "received"}), 200
+        print(f"🔴 Erro crítico no processamento do webhook: {str(e)}")
+        # Em caso de erro interno, ainda retornamos 200 para o MP para evitar reenvios.
+        return jsonify({"status": "received", "internal_error": "check_logs"}), 200
 
 # ========== ROTAS DE REDIRECIONAMENTO ==========
 
