@@ -41,7 +41,7 @@ def create_app(config_name='default'):
     from .api.filtros import filtros_bp
     app.register_blueprint(calouros_bp, url_prefix='/calouros')
     from .api.config import config_bp
-    app.register_blueprint(filtros_bp, url_prefix='/filtros_bp')
+    app.register_blueprint(filtros_bp, url_prefix='/filtros')
     app.register_blueprint(pagamentos_bp, url_prefix='/pagamentos')
     app.register_blueprint(config_bp, url_prefix='/config')
     app.register_blueprint(plans_bp, url_prefix='/plans')
@@ -62,4 +62,5 @@ def create_app(config_name='default'):
 # 🔥 ADICIONE ESTA PARTE para poder executar diretamente
 if __name__ == '__main__':
     app = create_app('development')
+
     app.run(host="localhost", port=5000, debug=True)
