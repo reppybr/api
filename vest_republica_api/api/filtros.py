@@ -48,7 +48,7 @@ def token_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
-@filtros_bp.route('/filtros/salvar', methods=['POST'])
+@filtros_bp.route('/salvar', methods=['POST'])
 @token_required
 def salvar_filtro():
     try:
@@ -96,7 +96,7 @@ def salvar_filtro():
         print(f"🔴 Erro ao salvar filtro: {str(e)}")
         return jsonify({'error': f'Erro ao salvar filtro: {str(e)}'}), 500
 
-@filtros_bp.route('/filtros/editar/<int:filtro_id>', methods=['PUT'])
+@filtros_bp.route('/editar/<int:filtro_id>', methods=['PUT'])
 @token_required
 def editar_filtro(filtro_id):
     try:
@@ -141,7 +141,7 @@ def editar_filtro(filtro_id):
         print(f"🔴 Erro ao editar filtro: {str(e)}")
         return jsonify({'error': f'Erro ao editar filtro: {str(e)}'}), 500
 
-@filtros_bp.route('/filtros/excluir/<int:filtro_id>', methods=['DELETE'])
+@filtros_bp.route('/excluir/<int:filtro_id>', methods=['DELETE'])
 @token_required
 def excluir_filtro(filtro_id):
     try:
@@ -172,7 +172,7 @@ def excluir_filtro(filtro_id):
         print(f"🔴 Erro ao excluir filtro: {str(e)}")
         return jsonify({'error': f'Erro ao excluir filtro: {str(e)}'}), 500
 
-@filtros_bp.route('/filtros/carregar/<int:filtro_id>', methods=['GET'])
+@filtros_bp.route('/carregar/<int:filtro_id>', methods=['GET'])
 @token_required
 def carregar_filtro(filtro_id):
     try:
@@ -214,7 +214,7 @@ def carregar_filtro(filtro_id):
         print(f"🔴 Erro ao carregar filtro: {str(e)}")
         return jsonify({'error': f'Erro ao carregar filtro: {str(e)}'}), 500
 
-@filtros_bp.route('/filtros/listar', methods=['GET'])
+@filtros_bp.route('/listar', methods=['GET'])
 @token_required
 def listar_filtros():
     try:
@@ -238,7 +238,7 @@ def listar_filtros():
         print(f"🔴 Erro ao listar filtros: {str(e)}")
         return jsonify({'error': f'Erro ao listar filtros: {str(e)}'}), 500
 
-@filtros_bp.route('/filtros/compartilhados/<string:share_token>', methods=['GET'])
+@filtros_bp.route('/compartilhados/<string:share_token>', methods=['GET'])
 def carregar_filtro_compartilhado(share_token):
     try:
         # Buscar filtro compartilhado
@@ -278,4 +278,5 @@ def carregar_filtro_compartilhado(share_token):
 @filtros_bp.route("/health", methods=["GET"])
 def filtros_health():
     """Health check específico para filtros"""
+
     return jsonify({"status": "healthy", "service": "filtros"}), 200
