@@ -86,12 +86,9 @@ def token_required(f):
 
             profile_response = supabase.table("users")\
 
-                .select("*")\
-
-                .eq("email", user_response.user.email)\
-
-                .execute()
-
+            .select("*")\
+            .eq("email", user_response.user.email)\
+            .execute()
             
 
             if not profile_response.data:
@@ -128,11 +125,9 @@ def get_user_republic(user_id):
 
         republic_response = supabase.table("republicas")\
 
-            .select("*")\
-
-            .eq("admin_user_id", user_id)\
-
-            .execute()
+        .select("*")\
+        .eq("admin_user_id", user_id)\
+        .execute()
 
         
 
@@ -146,13 +141,10 @@ def get_user_republic(user_id):
 
         member_response = supabase.table("republica_members")\
 
-            .select("republicas(*)")\
-
-            .eq("user_id", user_id)\
-
-            .eq("is_active", True)\
-
-            .execute()
+        .select("republicas(*)")\
+        .eq("user_id", user_id)\
+        .eq("is_active", True)\
+        .execute()
 
             
 
@@ -184,15 +176,11 @@ def get_plan_from_supabase(plan_type, billing_cycle):
 
         response = supabase.table("plans")\
 
-            .select("*")\
-
-            .eq("plan_type", plan_type)\
-
-            .eq("billing_cycle", billing_cycle)\
-
-            .eq("active", True)\
-
-            .execute()
+        .select("*")\
+        .eq("plan_type", plan_type)\
+        .eq("billing_cycle", billing_cycle)\
+        .eq("active", True)\
+        .execute()
 
         
 
@@ -480,14 +468,10 @@ def activate_user_plan_and_register_payment(checkout_session, payment_data):
 
         existing_plan = supabase.table("user_plans")\
 
-            .select("*")\
-
-            .eq("user_id", checkout_session['user_id'])\
-
-            .eq("republica_id", checkout_session['republica_id'])\
-
-            .execute()
-
+        .select("*")\
+        .eq("user_id", checkout_session['user_id'])\
+        .eq("republica_id", checkout_session['republica_id'])\
+        .execute()
         
 
         if existing_plan.data and len(existing_plan.data) > 0:
@@ -496,11 +480,9 @@ def activate_user_plan_and_register_payment(checkout_session, payment_data):
 
             plan_update = supabase.table("user_plans")\
 
-                .update(user_plan_data)\
-
-                .eq("id", existing_plan.data[0]['id'])\
-
-                .execute()
+            .update(user_plan_data)\
+            .eq("id", existing_plan.data[0]['id'])\
+            .execute()
 
             
 
@@ -536,17 +518,12 @@ def activate_user_plan_and_register_payment(checkout_session, payment_data):
 
         session_update = supabase.table("checkout_sessions")\
 
-            .update({
-
-                "status": "paid",
-
-                "updated_at": current_time.isoformat()
-
-            })\
-
-            .eq("id", checkout_session['id'])\
-
-            .execute()
+        .update({
+            "status": "paid",
+            "updated_at": current_time.isoformat()
+        })\
+        .eq("id", checkout_session['id'])\
+        .execute()
 
         
 
@@ -1476,14 +1453,10 @@ def process_payment_notification(payment_id):
 
                 checkout_response = supabase.table("checkout_sessions")\
 
-                    .select("*")\
-
-                    .eq("mp_preference_id", preference_id)\
-
-                    .eq("status", "pending")\
-
-                    .execute()
-
+                .select("*")\
+                .eq("mp_preference_id", preference_id)\
+                .eq("status", "pending")\
+                .execute()
                 
 
                 if checkout_response.data:
