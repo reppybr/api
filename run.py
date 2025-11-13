@@ -12,4 +12,4 @@ if __name__ == '__main__':
     is_debug = os.environ.get('FLASK_ENV') != 'production'
 
     # 👇 A MUDANÇA PRINCIPAL ESTÁ AQUI
-    app.run(host="0.0.0.0", port=port, debug=is_debug)
+    app.run(host="0.0.0.0", port=port, debug=is_debug, threaded=is_debug)

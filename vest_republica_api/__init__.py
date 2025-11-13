@@ -34,12 +34,14 @@ def create_app(config_name='default'):
     from .api.dados import dados_bp
     from .api.plans import plans_bp
     from .api.pagamentos import pagamentos_bp
+    from .api.analytics import analytics_bp
 
 
     from .api.calouros import calouros_bp
 
     from .api.filtros import filtros_bp
     app.register_blueprint(calouros_bp, url_prefix='/calouros')
+    app.register_blueprint(analytics_bp, url_prefix='/stats')
     from .api.config import config_bp
     app.register_blueprint(filtros_bp, url_prefix='/filtros')
     app.register_blueprint(pagamentos_bp, url_prefix='/pagamentos')

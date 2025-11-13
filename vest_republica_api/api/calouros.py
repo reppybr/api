@@ -78,38 +78,68 @@ def get_user_republic(user_id):
 @calouros_bp.route('/selecionados', methods=['GET'])
 @token_required
 def listar_calouros_selecionados():
-    """Lista TODOS os calouros do usuário (sem filtro)"""
+    """Lista TODOS os calouros do usuário (sem filtro) COM DADOS DA MASTER"""
     try:
         current_user = g.user
         
-        # Buscar república do usuário
+        # 1. Buscar república do usuário
         republica = get_user_republic(current_user['id'])
         if not republica:
             return jsonify({'error': 'Usuário não tem uma república cadastrada'}), 400
         
-        # 🔥 BUSCAR TODOS OS CALOUROS (SEM FILTRO)
+        # 2. 🔥 BUSCAR CALOUROS DO CRM FAZENDO JOIN COM A MASTER
+        # O select "*, master_calouros(*)" faz o JOIN
         calouros_response = supabase.table("republica_calouros")\
-            .select("*")\
+            .select("*, master_calouros(*)")\
             .eq("republica_id", republica['id'])\
             .order("created_at", desc=True)\
             .execute()
         
         calouros_data = calouros_response.data if calouros_response.data else []
         
-        print(f"✅ Retornando {len(calouros_data)} calouros do banco (TODOS)")
+        print(f"✅ Retornando {len(calouros_data)} calouros do banco (com JOIN)")
         
-        # 🔥 DEBUG: Log de todos os calouros
-        for calouro in calouros_data:
-            print(f"📋 {calouro['name']} - Favorito: {calouro['favourite']} - Status: {calouro['status']}")
-        
+        # 3. Formatar os dados para o frontend
+        # O frontend espera uma lista "achatada" (flat)
+        formatted_calouros = []
+        for crm_entry in calouros_data:
+            master_data = crm_entry.get('master_calouros')
+            
+            # Pular se o JOIN falhar (deve ser raro)
+            if not master_data:
+                print(f"🟡 Alerta: Entrada de CRM ID {crm_entry.get('id')} sem master_calouro correspondente.")
+                continue
+                
+            formatted = {
+                # Dados do CRM
+                "id": crm_entry.get('id'), # ID do CRM (importante!)
+                "republica_id": crm_entry.get('republica_id'),
+                "status": crm_entry.get('status'),
+                "favourite": crm_entry.get('favourite'),
+                "notes": crm_entry.get('notes'),
+                "email": crm_entry.get('email'),
+                "phone": crm_entry.get('phone'),
+                
+                # Dados da Master (o que o frontend precisa)
+                "name": master_data.get('name'),
+                "course": master_data.get('course'),
+                "university": master_data.get('university'),
+                "campus": master_data.get('unidade'), # Mapeando unidade -> campus
+                "gender": master_data.get('genero'),
+                "entrance_year": 2025 # Você pode precisar buscar isso da master se tiver
+                # "chamada": master_data.get('chamada'), # Se o frontend precisar
+            }
+            formatted_calouros.append(formatted)
+
         return jsonify({
-            'calouros': calouros_data,
-            'total': len(calouros_data)
+            'calouros': formatted_calouros, # Enviar dados formatados
+            'total': len(formatted_calouros)
         }), 200
         
     except Exception as e:
         print(f"🔴 Erro ao listar calouros selecionados: {str(e)}")
         return jsonify({'error': f'Erro ao listar calouros selecionados: {str(e)}'}), 500
+    
 @calouros_bp.route('/<int:calouro_id>/favorite', methods=['PUT'])
 @token_required
 def favoritar_calouro(calouro_id):
@@ -180,6 +210,7 @@ def favoritar_calouro(calouro_id):
         print(f"🔴 Erro ao atualizar favorito do calouro: {str(e)}")
         return jsonify({'error': f'Erro ao atualizar favorito do calouro: {str(e)}'}), 500
 
+
 @calouros_bp.route('/', methods=['POST'])
 @token_required
 def criar_calouro():
@@ -187,84 +218,91 @@ def criar_calouro():
         current_user = g.user
         data = request.get_json()
         
-        # 🔥 DEBUG DETALHADO - Log completo dos dados recebidos
-        print(f"🔵 DADOS RECEBIDOS DO FRONTEND:")
-        print(f"🔵 Name: {data.get('name')}")
-        print(f"🔵 Gender: {data.get('gender')} (tipo: {type(data.get('gender'))})")
-        print(f"🔵 Course: {data.get('course')}")
-        print(f"🔵 University: {data.get('university')}")
-        print(f"🔵 Campus: {data.get('campus')}")
-        print(f"🔵 Dados completos: {data}")
-        
-        # Buscar república do usuário
+        print(f"🔵 DADOS RECEBIDOS DO FRONTEND: {data}")
+
+        # 1. Buscar república do usuário
         republica = get_user_republic(current_user['id'])
         if not republica:
             return jsonify({'error': 'Usuário não tem uma república cadastrada'}), 400
-        
-        # Verificar se o calouro já existe
-        existing_calouro = supabase.table("republica_calouros")\
-            .select("*")\
-            .eq("republica_id", republica['id'])\
+
+        # 2. Encontrar o Calouro na tabela Master
+        #    (O frontend está enviando 'campus', que no seu DB master é 'unidade')
+        master_calouro_response = supabase.table("master_calouros")\
+            .select("id")\
             .eq("name", data.get('name'))\
             .eq("course", data.get('course'))\
             .eq("university", data.get('university'))\
-            .eq("campus", data.get('campus'))\
+            .eq("unidade", data.get('campus')) \
             .execute()
         
-        if existing_calouro.data:
-            # Se já existe, retornar o ID existente
+        if not master_calouro_response.data:
+            print(f"🔴 Erro crítico: Calouro não encontrado na master_calouros.")
+            print(f"   Nome: {data.get('name')}, Curso: {data.get('course')}, Unidade: {data.get('campus')}")
+            return jsonify({'error': 'Calouro não encontrado no banco de dados principal'}), 404
+
+        master_calouro_id = master_calouro_response.data[0]['id']
+        print(f"✅ Calouro mestre encontrado: ID {master_calouro_id}")
+
+        # 3. Verificar se a república já salvou este calouro (evitar duplicatas)
+        existing_crm_entry = supabase.table("republica_calouros")\
+            .select("id")\
+            .eq("republica_id", republica['id'])\
+            .eq("master_calouro_id", master_calouro_id)\
+            .execute()
+        
+        if existing_crm_entry.data:
+            print(f"🟡 Calouro já existe no CRM da república. ID: {existing_crm_entry.data[0]['id']}")
             return jsonify({
                 'message': 'Calouro já existe',
-                'calouro_id': existing_calouro.data[0]['id']
+                'calouro_id': existing_crm_entry.data[0]['id']
             }), 200
-        
-        # Mapear gênero para o formato do banco - CORRIGIDO
-        gender_map = {
-            'male': 'male',
-            'female': 'female',
-            'Masculino': 'male',  # Para compatibilidade
-            'Feminino': 'female', # Para compatibilidade
-            'Outro': 'other'
-        }
-        
-        gender_input = data.get('gender')
-        gender_db = gender_map.get(gender_input, 'other')
-        
-        print(f"🔵 Gender mapeado: {gender_input} -> {gender_db}")
-        
-        # Criar novo calouro
-        novo_calouro_data = {
+
+        # 4. Criar a nova entrada de CRM (só com IDs e dados do CRM)
+        novo_status = data.get('status', 'pending')
+
+        novo_calouro_data_crm = {
             "republica_id": republica['id'],
-            "name": data.get('name'),
-            "email": data.get('email'),
-            "phone": data.get('phone'),
-            "course": data.get('course'),
-            "university": data.get('university'),
-            "campus": data.get('campus'),
-            "entrance_year": data.get('entrance_year', datetime.now().year),
-            "gender": gender_db,
-            "status": data.get('status', 'pending'),
+            "master_calouro_id": master_calouro_id,
+            "created_by": current_user['id'],
+            "status": novo_status, # Usa a variável
             "favourite": data.get('favourite', False),
-            "created_by": current_user['id']
+            "email": data.get('email'), 
+            "phone": data.get('phone')
         }
-        
-        print(f"🔵 Dados finais para criar calouro: {novo_calouro_data}")
+
+        # 🔥 AUTOMAÇÃO DE DATA NA CRIAÇÃO
+        # Se o calouro está sendo criado JÁ com o status 'contacted'
+        if novo_status == 'contacted':
+            print(f"🔥 Automação na CRIAÇÃO: Definindo contact_date")
+            novo_calouro_data_crm['contact_date'] = datetime.utcnow().isoformat()
+
+        print(f"🔵 Inserindo no CRM: {novo_calouro_data_crm}")
         
         create_response = supabase.table("republica_calouros")\
-            .insert(novo_calouro_data)\
+            .insert(novo_calouro_data_crm)\
             .execute()
-        
+
         if not create_response.data:
-            return jsonify({'error': 'Erro ao criar calouro'}), 500
+            print(f"🔴 Erro ao inserir na tabela republica_calouros: {create_response.error}")
+            return jsonify({'error': 'Erro ao salvar calouro no CRM'}), 500
+
+        print(f"✅ Calouro salvo no CRM com sucesso. ID: {create_response.data[0]['id']}")
         
         return jsonify({
             'message': 'Calouro criado com sucesso',
             'calouro_id': create_response.data[0]['id']
         }), 201
-        
+            
     except Exception as e:
-        print(f"🔴 Erro ao criar calouro: {str(e)}")
-        return jsonify({'error': f'Erro ao criar calouro: {str(e)}'}), 500
+        print(f"🔴 Erro fatal ao criar calouro: {str(e)}")
+        # Tenta extrair a mensagem de erro do Supabase se for um erro de DB
+        error_message = str(e)
+        if hasattr(e, 'message'):
+            error_message = e.message
+        
+        return jsonify({'error': f'Erro ao criar calouro: {error_message}'}), 500
+    
+
 @calouros_bp.route('/<int:calouro_id>/status', methods=['PUT'])
 @token_required
 def atualizar_status_calouro(calouro_id):
@@ -298,18 +336,28 @@ def atualizar_status_calouro(calouro_id):
             .execute()
         
         if not calouro_response.data:
-            return jsonify({'error': 'Calouro não encontrado'}), 404
-        
-        # Preparar dados para atualização
+         return jsonify({'error': 'Calouro não encontrado'}), 404
+ 
+
+        calouro_atual = calouro_response.data[0]
+
         update_data = {
-            "status": status_db,  # Usar valor diretamente (já está em inglês)
-            "updated_at": datetime.utcnow().isoformat()
-        }
-        
+        "status": status_db, 
+         "updated_at": datetime.utcnow().isoformat()
+         }
+
+         # Se o usuário não enviou uma data manualmente E
+         # o status está mudando de 'pending' para 'contacted'
+        if not contact_date and calouro_atual['status'] == 'pending' and status_db == 'contacted':
+             print(f"🔥 Automação: Definindo contact_date para {calouro_atual['id']}")
+             update_data['contact_date'] = datetime.utcnow().isoformat()
+        elif contact_date:
+             # Se o usuário enviou uma data (ex: do futuro modal), usa ela
+             update_data['contact_date'] = contact_date
+
+         # Adiciona outros campos se existirem
         if notes is not None:
-            update_data['notes'] = notes
-        if contact_date:
-            update_data['contact_date'] = contact_date
+         update_data['notes'] = notes
         if interview_date:
             update_data['interview_date'] = interview_date
         
