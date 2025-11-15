@@ -88,37 +88,58 @@ def get_user_plan():
 dados_bp = Blueprint('dados', __name__)
 
 # --- FUNÇÃO DE QUERY (COM A CORREÇÃO DE SINTAXE) ---
+# --- ATUALIZAR A FUNÇÃO _build_calouros_query ---
+
 def _build_calouros_query(filters, check_plan=True):
     """
-    Função auxiliar interna para construir a query de busca no Supabase
-    baseado nos filtros do request e no plano do usuário.
+    Função auxiliar ATUALIZADA para suportar múltiplos valores nos filtros
     """
     
     # --- 1. Lógica de Segurança (Freemium no Backend) ---
+    chamadas = filters.getlist('chamadas') if 'chamadas' in filters else []
     chamada = filters.get('chamada', type=int)
+    
+    # Se veio como array, pega o primeiro para compatibilidade
+    if not chamada and chamadas:
+        chamada = chamadas[0] if isinstance(chamadas, list) and len(chamadas) > 0 else None
     
     # NOVO: Lógica de plano 'free' (se check_plan for True)
     if check_plan:
         user_plan = get_user_plan() 
         if user_plan == 'free':
             chamada = 1
+            chamadas = [1]  # Força apenas chamada 1 no free
             
     # --- 2. Parâmetros de Filtro e Paginação ---
     cidade = filters.get('cidade')
+    
+    # 🔥 AGORA SUPORTA MÚLTIPLOS VALORES
+    cursos = filters.getlist('cursos') if 'cursos' in filters else []
+    universidades = filters.getlist('universidades') if 'universidades' in filters else []
+    unidades = filters.getlist('unidades') if 'unidades' in filters else []
+    
+    # Para compatibilidade com parâmetros antigos
     curso = filters.get('curso')
     universidade = filters.get('universidade')
+    unidade = filters.get('unidade')
+    
+    # Se veio como valor único, converte para lista
+    if curso and not cursos:
+        cursos = [curso]
+    if universidade and not universidades:
+        universidades = [universidade]
+    if unidade and not unidades:
+        unidades = [unidade]
+    
     genero = filters.get('genero') 
     
     # --- NOVOS FILTROS VINDOS DO FRONTEND ---
-    unidade = filters.get('unidade') # Filtro de Unidade/Campus
-    q = filters.get('q')             # Filtro de Busca por Nome (q=query)
-    # ----------------------------------------
+    q = filters.get('q')  # Busca por nome
     
     page = filters.get('page', 1, type=int)
     limit = filters.get('limit', 50, type=int) 
     
     if page < 1: page = 1
-    # Teto de segurança de 200 é BOM. Mantenha assim.
     if limit > 200: limit = 200 
     offset = (page - 1) * limit
 
@@ -133,30 +154,43 @@ def _build_calouros_query(filters, check_plan=True):
     # Filtro obrigatório
     query = query.eq('cidade', cidade)
     
-    # --- FILTROS DINÂMICOS ATUALIZADOS ---
-    if chamada:
+    # --- FILTROS DINÂMICOS ATUALIZADOS (AGORA SUPORTA MÚLTIPLOS) ---
+    
+    # 🔥 FILTRO DE CHAMADAS (suporta múltiplas)
+    if chamadas and len(chamadas) > 0:
+        # Converte para inteiros
+        try:
+            chamadas_int = [int(c) for c in chamadas if c]
+            query = query.in_('chamada', chamadas_int)
+        except (ValueError, TypeError):
+            # Fallback para chamada única se houver erro
+            if chamada:
+                query = query.eq('chamada', chamada)
+    elif chamada:
         query = query.eq('chamada', chamada)
-    if curso:
-        query = query.eq('course', curso)
-    if universidade:
-        query = query.eq('university', universidade)
+    
+    # 🔥 FILTRO DE CURSOS (suporta múltiplos)
+    if cursos and len(cursos) > 0:
+        query = query.in_('course', cursos)
+    
+    # 🔥 FILTRO DE UNIVERSIDADES (suporta múltiplas)
+    if universidades and len(universidades) > 0:
+        query = query.in_('university', universidades)
+    
+    # 🔥 FILTRO DE UNIDADES (suporta múltiplas)
+    if unidades and len(unidades) > 0:
+        query = query.in_('unidade', unidades)
+    
     if genero:
         query = query.eq('genero', genero)
-    
-    # Adiciona os novos filtros à query
-    if unidade:
-        query = query.eq('unidade', unidade)
         
     if q:
-        # 'ilike' é case-insensitive, f'%{q}%' procura em qualquer parte do nome
         query = query.ilike('name', f'%{q}%') 
-    # --- FIM DA ATUALIZAÇÃO ---
-        
+    
     query = query.range(offset, offset + (limit - 1))
     query = query.order("name", desc=False)
     
     return query, None
-
 
 # --- ROTAS (COM A CORREÇÃO DE PAGINAÇÃO) ---
 
@@ -164,7 +198,7 @@ def _build_calouros_query(filters, check_plan=True):
 @token_required 
 def get_dados_completos():
     """
-    Endpoint PAGO (Plano Basic/Premium)
+    Endpoint PAGO (Plano Basic/Premium) - ATUALIZADO para múltiplos filtros
     """
     
     user_plan = get_user_plan()
@@ -182,19 +216,16 @@ def get_dados_completos():
         data = response.data
         total_items = response.count 
         page = request.args.get('page', 1, type=int)
-
-        # --- CORREÇÃO DE LÓGICA E CRASH (PAGINAÇÃO) ---
         limit = request.args.get('limit', 50, type=int)
-        if limit > 200:
-            limit = 200
+        
+        if limit > 200: limit = 200
         
         if total_items is not None and total_items > 0:
             total_pages = math.ceil(total_items / limit)
         else:
             total_pages = 0 
             if total_items is None:
-                total_items = 0 
-        # --- FIM DA CORREÇÃO ---
+                total_items = 0
 
         if not data:
             return jsonify({
@@ -222,12 +253,14 @@ def get_dados_completos():
 @token_required 
 def get_chamada1_cidade():
     """
-    Endpoint GRÁTIS (Plano Free)
+    Endpoint GRÁTIS (Plano Free) - ATUALIZADO
     """
     
     try:
+        # Para o free, forçar apenas chamada 1 independente do filtro
         filters = request.args.copy()
-        filters['chamada'] = 1 
+        filters['chamada'] = 1
+        filters['chamadas'] = [1]  # Força array com apenas chamada 1
         
         query, error_response = _build_calouros_query(filters, check_plan=False)
         
@@ -239,11 +272,9 @@ def get_chamada1_cidade():
         data = response.data
         total_items = response.count
         page = request.args.get('page', 1, type=int)
-
-        # --- CORREÇÃO DE LÓGICA E CRASH (PAGINAÇÃO) ---
         limit = request.args.get('limit', 50, type=int)
-        if limit > 200:
-            limit = 200
+        
+        if limit > 200: limit = 200
         
         if total_items is not None and total_items > 0:
             total_pages = math.ceil(total_items / limit)
@@ -251,7 +282,6 @@ def get_chamada1_cidade():
             total_pages = 0
             if total_items is None:
                 total_items = 0
-        # --- FIM DA CORREÇÃO ---
 
         if not data:
             return jsonify({
@@ -274,10 +304,45 @@ def get_chamada1_cidade():
         print(f"🔴 ERRO 500 NA ROTA /calouros/chamada1: {e}")
         return jsonify({"error": "Erro interno ao consultar o banco de dados.", "details": str(e)}), 500
 
-
 # --- Rotas Auxiliares de Filtros (Lendo do BD) ---
 # (Estas rotas permanecem iguais)
+# Adicione estas duas novas rotas ao final do seu arquivo dados_bp.py
 
+@dados_bp.route('/filtros/unidades', methods=['GET'])
+@token_required
+def get_unidades_disponiveis():
+    cidade = request.args.get('cidade')
+    if not cidade:
+        return jsonify({"error": "O parâmetro 'cidade' é obrigatório."}), 400
+    try:
+        response = supabase.rpc("get_distinct_unidades_by_cidade", {"p_cidade": cidade}).execute()
+        unidade_list = [item['unidade'] for item in response.data if item['unidade']]
+        return jsonify({
+            "cidade": cidade,
+            "unidades": sorted(unidade_list),
+            "total": len(unidade_list)
+        }), 200
+    except Exception as e:
+        print(f"🔴 Erro ao consultar unidades: {str(e)}")
+        return jsonify({"error": "Erro ao consultar unidades. (A função 'get_distinct_unidades_by_cidade' existe?)", "details": str(e)}), 500
+
+@dados_bp.route('/filtros/chamadas', methods=['GET'])
+@token_required
+def get_chamadas_disponiveis():
+    cidade = request.args.get('cidade')
+    if not cidade:
+        return jsonify({"error": "O parâmetro 'cidade' é obrigatório."}), 400
+    try:
+        response = supabase.rpc("get_distinct_chamadas_by_cidade", {"p_cidade": cidade}).execute()
+        chamada_list = [item['chamada'] for item in response.data if item['chamada']]
+        return jsonify({
+            "cidade": cidade,
+            "chamadas": sorted(chamada_list),
+            "total": len(chamada_list)
+        }), 200
+    except Exception as e:
+        print(f"🔴 Erro ao consultar chamadas: {str(e)}")
+        return jsonify({"error": "Erro ao consultar chamadas. (A função 'get_distinct_chamadas_by_cidade' existe?)", "details": str(e)}), 500
 @dados_bp.route('/filtros/cidades', methods=['GET'])
 @token_required
 def get_cidades_disponiveis():
